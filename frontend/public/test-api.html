@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>API Test</h1>
+    <button onclick="testSubmit()">Test Submit</button>
+    <div id="result"></div>
+
+    <script>
+        async function testSubmit() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testing...';
+
+            try {
+                const response = await fetch('/api/v1/requirement/submit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        user_id: 'test_user',
+                        requirement: {
+                            city_name: '北京',
+                            travel_days: 3,
+                            total_budget: 5000,
+                            travel_type: 'leisure',
+                            travel_date: '2024-06-01',
+                            preferences: ['历史古迹', '美食探索']
+                        }
+                    })
+                });
+
+                const data = await response.json();
+                resultDiv.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } catch (error) {
+                resultDiv.innerHTML = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
