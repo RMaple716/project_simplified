@@ -306,9 +306,9 @@ const AttractionCard: React.FC<{
         </Text>
       )}
       <Space size="small">
-        {attraction.visit_time && (
+        {(attraction.visit_time || attraction.start_time) && (
           <Tag icon={<ClockCircleOutlined />} color="blue">
-            {attraction.visit_time}
+            {attraction.visit_time || `${attraction.start_time}${attraction.end_time ? `-${attraction.end_time}` : ''}`}
           </Tag>
         )}
         {attraction.visit_duration && (
@@ -369,7 +369,7 @@ const MealCard: React.FC<{
   >
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text strong>{meal.restaurant_name || meal.name}</Text>
+        <Text strong>{meal.name || meal.restaurant_name}</Text>
         {meal.meal_type && (
           <Tag color="orange">
             {meal.meal_type === 'breakfast' ? '早餐' : 
@@ -809,7 +809,14 @@ const ItineraryDetail: React.FC = () => {
       
       if ((response as any).code === 200) {
         message.success('保存成功');
-        setItinerary((response as any).data);
+        const savedData = (response as any).data;
+        setItinerary({
+          ...itinerary,                      
+          title: savedData.title,            
+          day_plans: savedData.day_plans,
+          status: savedData.status,
+          updated_at: savedData.updated_at,
+        });
       } else {
         message.error((response as any).msg || '保存失败');
       }
@@ -861,16 +868,16 @@ const ItineraryDetail: React.FC = () => {
     if (!itinerary || !itinerary.day_plans) return;
     
     const newDayPlans = [...itinerary.day_plans];
-    const attractions = [...(newDayPlans[editAttractionModal.dayIndex].attractions || [])];
+    const currentDayPlan = { ...newDayPlans[editAttractionModal.dayIndex] };
+    const attractions = [...(currentDayPlan.attractions || [])];
     
     if (editAttractionModal.attractionIndex !== undefined) {
       attractions[editAttractionModal.attractionIndex] = values;
     } else {
       attractions.push(values);
     }
-    
     newDayPlans[editAttractionModal.dayIndex] = {
-      ...newDayPlans[editAttractionModal.dayIndex],
+      ...currentDayPlan,
       attractions,
     };
     
@@ -923,7 +930,8 @@ const ItineraryDetail: React.FC = () => {
     if (!itinerary || !itinerary.day_plans) return;
     
     const newDayPlans = [...itinerary.day_plans];
-    const meals = [...(newDayPlans[editMealModal.dayIndex].meals || [])];
+    const currentDayPlan = { ...newDayPlans[editMealModal.dayIndex] };
+    const meals = [...(currentDayPlan.meals || [])];
     
     if (editMealModal.mealIndex !== undefined) {
       meals[editMealModal.mealIndex] = values;
@@ -932,7 +940,7 @@ const ItineraryDetail: React.FC = () => {
     }
     
     newDayPlans[editMealModal.dayIndex] = {
-      ...newDayPlans[editMealModal.dayIndex],
+      ...currentDayPlan,
       meals,
     };
     
