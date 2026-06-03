@@ -140,15 +140,24 @@ function clearRouteOverlays(navigator: any): void {
     console.warn('清除路线覆盖物失败:', e);
   }
   // Transfer 的 clear() 无法清除地图上已绘制的 Polyline/Marker
-  // 通过 navigator 持有的 map 引用来清除残留覆盖物
+  // 遍历移除所有非 Marker 残留覆盖物
   try {
     if (navigator._map) {
-      navigator._map.clearMap();
+      const overlays = navigator._map.getAllOverlays?.();
+      if (overlays && overlays.length > 0) {
+        const routeOverlays = overlays.filter((o: any) =>
+          !(o instanceof (window as any).AMap.Marker)
+        );
+        if (routeOverlays.length > 0) {
+          navigator._map.remove(routeOverlays);
+        }
+      }
     }
   } catch (e) {
     // ignore
   }
 }
+
 // ==================== QPS 限流器（确保 ≤ 3 QPS） ====================
 /**
  * 创建一个请求队列，确保每秒最多发送 maxQPS 个请求。
@@ -412,21 +421,41 @@ const MultiRouteMapModal: React.FC<MultiRouteMapProps> = ({
       }
     }
   }, [segments, getEffectiveSegment]);
+
+
   /** 切换出行方式 */
   const handleModeChange = useCallback(async (newMode: TransportMode) => {
-    if (!mapInstanceRef.current) return;
+      if (!mapInstanceRef.current) return;
 
-    setLoading(true);
-    setSegmentModes(prev => {
-      const updated = [...prev];
-      updated[activeIndex] = newMode;
-      return updated;
-    });
-    const map = mapInstanceRef.current;
-    const panelEl = panelRef.current;
-    await planRoute(map, activeIndex, panelEl);
-    setLoading(false);
-  }, [activeIndex, planRoute]);
+      // 先取消正在进行的旧搜索
+      cancelledRef.current = true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      cancelledRef.current = false;
+
+      // 通过地图直接清除所有非 Marker 残留覆盖物
+      const map = mapInstanceRef.current;
+      if (currentRouteRef.current) {
+        clearRouteOverlays(currentRouteRef.current);
+        currentRouteRef.current = null;
+      }
+      try {
+        const overlays = map.getAllOverlays?.() || [];
+        const toRemove = overlays.filter((o: any) =>
+          !(o instanceof (window as any).AMap.Marker)
+        );
+        if (toRemove.length > 0) map.remove(toRemove);
+      } catch (e) { /* ignore */ }
+
+      setLoading(true);
+      setSegmentModes(prev => {
+        const updated = [...prev];
+        updated[activeIndex] = newMode;
+        return updated;
+      });
+      const panelEl = panelRef.current;
+      await planRoute(map, activeIndex, panelEl, newMode);
+      setLoading(false);
+    }, [activeIndex, planRoute]);
 
   // 初始化/重建地图
   useEffect(() => {
@@ -1000,8 +1029,14 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
     }
   }, [segments, getEffectiveSegment]);
   /** 切换出行方式 */
-         const handleModeChange = useCallback(async (newMode: string) => {
+  const handleModeChange = useCallback(async (newMode: string) => {
       if (!mapInstanceRef.current) return;
+
+      cancelledRef.current = true;
+      await new Promise(resolve => setTimeout(resolve, 50));
+      cancelledRef.current = false;
+
+
       setLoading(true);
       setSegmentModes(prev => {
         const updated = [...prev];
@@ -1013,11 +1048,12 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
       await planRoute(map, activeIndex, panelEl, newMode);
       setLoading(false);
     }, [activeIndex, planRoute]);
-    /** 获取当前有效的 segmentModes（直接从 ref 读取，避免闭包陈旧问题） */
+
+
   const segmentModesRef = useRef(segmentModes);
   useEffect(() => { segmentModesRef.current = segmentModes; }, [segmentModes]);
 
-  /** 初始化地图 + 规划所有路段 */
+  /** 初始化地图 + 只规划当前选中路段 */
   const initMap = useCallback(async () => {
     if (!mapRef.current || segments.length === 0) return;
     let localCancelled = false;
@@ -1030,7 +1066,7 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
       await loadAMapSDK();
       if (localCancelled) return;
 
-            // 清理旧实例
+      // 清理旧实例
       if (currentRouteRef.current) {
         clearRouteOverlays(currentRouteRef.current);
         currentRouteRef.current = null;
@@ -1053,12 +1089,11 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
       } catch (e) { /* ignore */ }
     });
 
-
       if (allLocations && allLocations.length > 0) {
         markersRef.current = addMarkers(map, allLocations);
       }
 
-      // 规划第一个路段（使用 ref 中的最新 segmentModes）
+      // 规划第一个路段
       const latestModes = segmentModesRef.current;
       const firstSegment = { ...segments[0], type: latestModes[0] || segments[0].type };
       const { origin: firstOrigin, destination: firstDest } = getOriginDest(firstSegment);
@@ -1067,18 +1102,6 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
       currentRouteRef.current = firstNavigator;
       await searchRoute(firstNavigator, firstOrigin, firstDest, { cancelledRef });
       map.setFitView();
-
-            // 绘制其他路段的背景线
-      if (segments.length > 1) {
-        for (let i = 1; i < segments.length; i++) {
-          if (localCancelled) break;
-          const bgSegment = { ...segments[i], type: latestModes[i] || segments[i].type };
-          const { origin, destination } = getOriginDest(bgSegment);
-          const bgCity = latestModes[i] === 'transit' ? (cityName || segments[i].cityName) : undefined;
-          const bgNavigator = await createNavigator(bgSegment.type, map, null,bgCity);
-          await searchRoute(bgNavigator, origin, destination, { cancelledRef });
-        }
-      }
 
       if (!localCancelled) {
         setLoading(false);
