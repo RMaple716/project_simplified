@@ -12,10 +12,12 @@ from src.database import get_db
 from src.models.db_models import User
 import os
 import random
+
 # JWT 配置
 JWT_SECRET = os.getenv("JWT_SECRET", "travel-planner-jwt-secret-key-2026-secure")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
+# Token 有效期：默认 7 天（168小时）。可通过环境变量 JWT_EXPIRE_HOURS 覆盖
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "7"))
 
 router = APIRouter(prefix="/api/v1/auth", tags=["用户认证"])
 

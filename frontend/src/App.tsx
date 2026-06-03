@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, theme, Button ,Dropdown} from 'antd';
 import { 
@@ -18,6 +18,27 @@ import { logout } from './store/slices/authSlice';
 
 const { Header, Content, Footer } = Layout;
 
+// 简单的 JWT 解码函数（不需要额外库）
+function parseJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    // Base64 URL-safe decode
+    const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+function isTokenExpired(token: string): boolean {
+  const payload = parseJwtPayload(token);
+  if (!payload || !payload.exp) return true;
+  // exp 是秒级时间戳，转为毫秒比较
+  return (payload.exp as number) * 1000 < Date.now();
+}
+
 // 内部组件，可以使用useNavigate和useLocation
 const AppContent: React.FC = () => {
   const navigate = useNavigate();
@@ -26,32 +47,44 @@ const AppContent: React.FC = () => {
   const { isLoggedIn, user } = useSelector((state: RootState) => state.auth);
   const { token: { colorBgContainer, borderRadiusLG } } = theme.useToken();
 
+  // 页面加载时检查 token 是否过期
+  useEffect(() => {
+    const storedToken = localStorage.getItem('token');
+    if (storedToken && isTokenExpired(storedToken)) {
+    dispatch(logout());
+      // 如果当前不在登录页，跳转到登录页
+      if (location.pathname !== '/login') {
+        navigate('/login', { replace: true });
+      }
+    }
+  }, []);
+
   const menuItems = [
-    {
+        {
       key: '/',
       icon: <HomeOutlined />,
       label: '首页',
-    },
-    {
+        },
+        {
       key: '/requirement',
       icon: <PlusOutlined />,
       label: '新建行程',
-    },
+        },
     {
       key: '/itineraries',
       icon: <CalendarOutlined />,
       label: '我的行程',
     },
-  ];
+      ];
 
   const handleMenuClick = ({ key }: { key: string }) => {
     navigate(key);
-  };
+};
 
   const handleLogout = () => {
     dispatch(logout());
     navigate('/');
-  };
+};
 
     const userMenuItems = isLoggedIn
     ? [
@@ -80,9 +113,9 @@ const AppContent: React.FC = () => {
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
-        <div style={{ 
-          color: 'white', 
-          fontSize: '20px', 
+        <div style={{
+          color: 'white',
+          fontSize: '20px',
           fontWeight: 'bold',
           marginRight: '48px',
           cursor: 'pointer',
@@ -105,7 +138,7 @@ const AppContent: React.FC = () => {
           </Button>
         </Dropdown>
       </Header>
-      
+
       <Content style={{ padding: '0' }}>
         <div
           style={{
@@ -125,7 +158,7 @@ const AppContent: React.FC = () => {
           </Routes>
         </div>
       </Content>
-      
+
       <Footer style={{ textAlign: 'center' }}>
         旅游行程规划系统 ©2026 Created with React + TypeScript
       </Footer>
@@ -142,3 +175,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+

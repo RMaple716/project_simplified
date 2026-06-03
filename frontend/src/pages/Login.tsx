@@ -2,12 +2,15 @@ import React, { useState } from 'react';
 import { Form, Input, Button, Card, Typography, message, Tabs } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { useDispatch } from 'react-redux';
 import { authApi } from '../services/authApi';
+import { loginSuccess } from '../store/slices/authSlice';
 
 const { Title } = Typography;
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
+  const dispatch = useDispatch();
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('login');
 
@@ -20,6 +23,12 @@ const Login: React.FC = () => {
         localStorage.setItem('user_id', res.data.user_id);
         localStorage.setItem('username', res.data.username);
         localStorage.setItem('email', res.data.email || '');
+        // 同步更新 Redux 状态，使导航栏立即反映登录状态
+        dispatch(loginSuccess({
+          token: res.data.access_token,
+          user_id: res.data.user_id,
+          username: res.data.username,
+        }));
         message.success('登录成功');
         navigate('/');
       }
@@ -43,6 +52,12 @@ const Login: React.FC = () => {
         localStorage.setItem('user_id', res.data.user_id);
         localStorage.setItem('username', res.data.username);
         localStorage.setItem('email', res.data.email || '');
+        // 同步更新 Redux 状态，使导航栏立即反映登录状态
+        dispatch(loginSuccess({
+          token: res.data.access_token,
+          user_id: res.data.user_id,
+          username: res.data.username,
+        }));
         message.success('注册成功');
         navigate('/');
       }
