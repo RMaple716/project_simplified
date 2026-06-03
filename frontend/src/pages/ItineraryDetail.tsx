@@ -531,9 +531,9 @@ if (navData && dayPlan.attractions && dayPlan.attractions.length > 0) {
     }
   }
 
-    // 🆕 如果有多个景点，构造多路段数据
+
     if (allAttractions.length >= 2) {
-    // 🆕 从 dayPlan.transport 获取默认出行方式，统一 riding → bicycling
+    
     const rawMode = (dayPlan.transport?.mode || dayPlan.transport?.type || 'driving');
     const defaultMode = (rawMode === 'riding' ? 'bicycling' : rawMode) as 'driving' | 'walking' | 'bicycling' | 'transit';
 
@@ -542,7 +542,7 @@ if (navData && dayPlan.attractions && dayPlan.attractions.length > 0) {
       const from = allAttractions[i];
       const to = allAttractions[i + 1];
 
-      // 🆕 如果 dayPlan 有按段的交通数据（segments），优先使用对应段的出行方式
+
       const segmentTransport = dayPlan.transport?.segments?.[i];
       const rawSegMode = (segmentTransport?.mode || segmentTransport?.type || defaultMode);
       const mode = (rawSegMode === 'riding' ? 'bicycling' : rawSegMode) as 'driving' | 'walking' | 'bicycling' | 'transit';

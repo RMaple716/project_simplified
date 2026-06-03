@@ -111,8 +111,12 @@ let amapLoadPromise: Promise<void> | null = null;
 
 function loadAMapSDK(): Promise<void> {
   if (amapLoadPromise) return amapLoadPromise;
+
   amapLoadPromise = new Promise((resolve, reject) => {
-    if ((window as any).AMap && (window as any).AMap.Map) { resolve(); return; }
+    if ((window as any).AMap && (window as any).AMap.Map) {
+      resolve();
+      return;
+    }
     // 设置安全密钥（必须在脚本加载之前）
     (window as any)._AMapSecurityConfig = {
       securityJsCode: AMAP_SECURITY_JS_CODE
@@ -123,15 +127,13 @@ function loadAMapSDK(): Promise<void> {
     };
     const script = document.createElement('script');
     script.type = 'text/javascript';
-    // 注意：不在 URL 中声明任何 plugin，全部按需加载
-    script.src = `https://webapi.amap.com/maps?v=2.0&key=${AMAP_JS_API_KEY}&callback=onAMapLoad`;
+    // 通过 URL plugin 参数预加载所有路线规划插件
+    script.src = `https://webapi.amap.com/maps?v=2.0&key=${AMAP_JS_API_KEY}&plugin=AMap.Driving,AMap.Transfer,AMap.Walking,AMap.Riding,AMap.ToolBar,AMap.Scale&callback=onAMapLoad`;
     script.onerror = () => { amapLoadPromise = null; reject(new Error('高德地图API加载失败')); };
     document.head.appendChild(script);
   });
   return amapLoadPromise;
 }
-
-/** 清除地图上的路线覆盖物（兼容 Transfer 等特殊类型） */
 function clearRouteOverlays(navigator: any): void {
   if (!navigator) return;
   try {
@@ -215,35 +217,52 @@ function createNavigator(mode: string, map: any, panelEl?: HTMLElement | string 
   }
 
   return new Promise((resolve) => {
-    switch (normalizedMode) {
-      case 'walking':
-        (window as any).AMap.plugin('AMap.Walking', () => {
-          resolve(new (window as any).AMap.Walking(baseOptions));
-        });
-        break;
-      case 'bicycling':
-        (window as any).AMap.plugin('AMap.Riding', () => {
-          resolve(new (window as any).AMap.Riding(baseOptions));
-        });
-        break;
-      case 'transit':
-        (window as any).AMap.plugin('AMap.Transfer', () => {
+    const tryCreate = (attempt: number, maxAttempts: number) => {
+      const AMap = (window as any).AMap;
+      switch (normalizedMode) {
+        case 'walking':
+          AMap.plugin('AMap.Walking', () => {
+            resolve(new AMap.Walking(baseOptions));
+          });
+          break;
+        case 'bicycling':
+          AMap.plugin('AMap.Riding', () => {
+            resolve(new AMap.Riding(baseOptions));
+          });
+          break;
+        case 'transit':
+          // Transfer 插件首次实例化时可能存在内部初始化延迟，增加重试机制
           baseOptions.city = city || '北京';
-          baseOptions.policy = (window as any).AMap.TransferPolicy?.LEAST_TIME || 0;
+          baseOptions.policy = AMap.TransferPolicy?.LEAST_TIME || 0;
           const transitOptions = { ...baseOptions };
           delete transitOptions.hideMarkers;
-          resolve(new (window as any).AMap.Transfer(transitOptions));
-        });
-        break;
-      case 'driving':
-      default:
-        (window as any).AMap.plugin('AMap.Driving', () => {
-          baseOptions.policy = (window as any).AMap.DrivingPolicy?.LEAST_TIME || 0;
-          baseOptions.showTraffic = true;
-          resolve(new (window as any).AMap.Driving(baseOptions));
-        });
-        break;
-    }
+          try {
+            const transfer = new AMap.Transfer(transitOptions);
+            // 验证实例是否完整（检查关键方法是否存在）
+            if (typeof transfer.search === 'function') {
+              resolve(transfer);
+            } else {
+              throw new Error('Transfer 实例未完全初始化');
+            }
+          } catch (e) {
+            if (attempt < maxAttempts) {
+              setTimeout(() => tryCreate(attempt + 1, maxAttempts), 500 * (attempt + 1));
+            } else {
+              resolve(new AMap.Transfer(transitOptions));
+            }
+          }
+          break;
+        case 'driving':
+        default:
+          AMap.plugin('AMap.Driving', () => {
+            baseOptions.policy = AMap.DrivingPolicy?.LEAST_TIME || 0;
+            baseOptions.showTraffic = true;
+            resolve(new AMap.Driving(baseOptions));
+          });
+          break;
+      }
+    };
+    tryCreate(0, 3);
   });
 }
 /**
@@ -350,8 +369,8 @@ const MultiRouteMapModal: React.FC<MultiRouteMapProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const [routeSummary, setRouteSummary] = useState<{ distance: string; duration: string; mode: string } | null>(null);
   // 跟踪每个路段当前选的出行方式
-  const [segmentModes, setSegmentModes] = useState<TransportMode[]>(() =>
-    segments.map(s => (s.currentMode || s.type || 'driving') as TransportMode)
+   const [segmentModes, setSegmentModes] = useState<TransportMode[]>(() =>
+    segments.map(() => 'driving' as TransportMode)
   );
 
   // 当 segments 变化时重置出行方式
@@ -955,8 +974,8 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const [routeSummary, setRouteSummary] = useState<{ distance: string; duration: string; mode: string } | null>(null);
   // 跟踪每个路段当前选的出行方式
-  const [segmentModes, setSegmentModes] = useState<string[]>(() =>
-    segments.map(s => (s.currentMode || s.type || 'driving') as TransportMode)
+    const [segmentModes, setSegmentModes] = useState<string[]>(() =>
+    segments.map(() => 'driving' as TransportMode)
   );
 
   // 当 segments 变化时重置出行方式
@@ -1028,14 +1047,8 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
       }
     }
   }, [segments, getEffectiveSegment]);
-  /** 切换出行方式 */
   const handleModeChange = useCallback(async (newMode: string) => {
       if (!mapInstanceRef.current) return;
-
-      cancelledRef.current = true;
-      await new Promise(resolve => setTimeout(resolve, 50));
-      cancelledRef.current = false;
-
 
       setLoading(true);
       setSegmentModes(prev => {
@@ -1043,11 +1056,42 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
         updated[activeIndex] = newMode as TransportMode;
         return updated;
       });
-      const map = mapInstanceRef.current;
-      const panelEl = panelRef.current;
-      await planRoute(map, activeIndex, panelEl, newMode);
+
+      // 销毁旧地图实例和路线覆盖物，避免残留冲突
+      cancelledRef.current = true;
+      if (currentRouteRef.current) {
+        try { currentRouteRef.current.clear(); } catch (e) { /* ignore */ }
+        currentRouteRef.current = null;
+      }
+      if (mapInstanceRef.current) {
+        try { mapInstanceRef.current.clearMap(); } catch (e) { /* ignore */ }
+        mapInstanceRef.current.destroy();
+        mapInstanceRef.current = null;
+      }
+      markersRef.current = [];
+      await new Promise(resolve => setTimeout(resolve, 200));
+      cancelledRef.current = false;
+
+      // 重建地图实例
+      try {
+        await loadAMapSDK();
+        if (!mapRef.current) { setLoading(false); return; }
+        const map = new (window as any).AMap.Map(mapRef.current, {
+          viewMode: '2D', zoom: 12, center: [116.397428, 39.90923],
+        });
+        mapInstanceRef.current = map;
+
+        if (allLocations && allLocations.length > 0) {
+          markersRef.current = addMarkers(map, allLocations);
+        }
+
+        const panelEl = panelRef.current;
+        await planRoute(map, activeIndex, panelEl, newMode);
+      } catch (e) {
+        setLoadError(`地图加载失败: ${(e as Error).message}`);
+      }
       setLoading(false);
-    }, [activeIndex, planRoute]);
+    }, [activeIndex, planRoute, allLocations]);
 
 
   const segmentModesRef = useRef(segmentModes);
