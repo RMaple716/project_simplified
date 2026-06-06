@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, Typography, message, Tabs } from 'antd';
-import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Typography, message, Tabs } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { authApi } from '../services/authApi';
@@ -23,7 +22,6 @@ const Login: React.FC = () => {
         localStorage.setItem('user_id', res.data.user_id);
         localStorage.setItem('username', res.data.username);
         localStorage.setItem('email', res.data.email || '');
-        // 同步更新 Redux 状态，使导航栏立即反映登录状态
         dispatch(loginSuccess({
           token: res.data.access_token,
           user_id: res.data.user_id,
@@ -52,7 +50,6 @@ const Login: React.FC = () => {
         localStorage.setItem('user_id', res.data.user_id);
         localStorage.setItem('username', res.data.username);
         localStorage.setItem('email', res.data.email || '');
-        // 同步更新 Redux 状态，使导航栏立即反映登录状态
         dispatch(loginSuccess({
           token: res.data.access_token,
           user_id: res.data.user_id,
@@ -71,16 +68,35 @@ const Login: React.FC = () => {
   return (
     <div style={{
       display: 'flex', justifyContent: 'center', alignItems: 'center',
-      minHeight: 'calc(100vh - 134px)', background: '#f0f2f5', padding: 24
+      minHeight: 'calc(100vh - 134px)', padding: 24,
+      background: '#f7f3ee',
     }}>
-      <Card style={{ width: 420, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-        <Title level={3} style={{ textAlign: 'center', marginBottom: 24 }}>
-          旅游行程规划系统
+      <div style={{
+        width: 400,
+        border: '1px solid #e0d8ce',
+        background: '#faf7f2',
+        padding: '36px 32px 28px',
+      }}>
+        {/* 【去AI味】标题不用"系统"二字，改为手写感衬线体 */}
+        <Title level={3} style={{
+          textAlign: 'center',
+          marginBottom: 16,
+          fontFamily: "'Cormorant Garamond', Georgia, serif",
+          fontSize: '1.8rem',
+          letterSpacing: '2px',
+          fontWeight: 600,
+        }}>
+          旅途手账
         </Title>
+        <div style={{ textAlign: 'center', marginBottom: 28, color: '#8a7a70', fontSize: 14 }}>
+          {activeTab === 'login' ? '回来啦？' : '新朋友，欢迎'}
+        </div>
+
         <Tabs
           activeKey={activeTab}
           onChange={setActiveTab}
           centered
+          size="small"
           items={[
             {
               key: 'login',
@@ -88,12 +104,12 @@ const Login: React.FC = () => {
               children: (
                 <Form onFinish={handleLogin} size="large">
                   <Form.Item name="username" rules={[{ required: true, message: '请输入用户名或邮箱' }]}>
-                    <Input prefix={<UserOutlined />} placeholder="用户名或邮箱" />
+                    <Input placeholder="用户名或邮箱" />
                   </Form.Item>
                   <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
-                    <Input.Password prefix={<LockOutlined />} placeholder="密码" />
+                    <Input.Password placeholder="密码" />
                   </Form.Item>
-                  <Form.Item>
+                  <Form.Item style={{ marginBottom: 0 }}>
                     <Button type="primary" htmlType="submit" block loading={loading}>
                       登录
                     </Button>
@@ -107,19 +123,19 @@ const Login: React.FC = () => {
               children: (
                 <Form onFinish={handleRegister} size="large">
                   <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-                    <Input prefix={<UserOutlined />} placeholder="用户名" />
+                    <Input placeholder="用户名" />
                   </Form.Item>
                   <Form.Item name="email" rules={[
                     { required: true, message: '请输入邮箱' },
                     { type: 'email', message: '邮箱格式不正确' },
                   ]}>
-                    <Input prefix={<MailOutlined />} placeholder="邮箱" />
+                    <Input placeholder="邮箱" />
                   </Form.Item>
                   <Form.Item name="password" rules={[
                     { required: true, message: '请输入密码' },
                     { min: 6, message: '密码至少6位' },
                   ]}>
-                    <Input.Password prefix={<LockOutlined />} placeholder="密码" />
+                    <Input.Password placeholder="密码" />
                   </Form.Item>
                   <Form.Item name="confirm" rules={[
                     { required: true, message: '请确认密码' },
@@ -130,9 +146,9 @@ const Login: React.FC = () => {
                       },
                     }),
                   ]}>
-                    <Input.Password prefix={<LockOutlined />} placeholder="确认密码" />
+                    <Input.Password placeholder="确认密码" />
                   </Form.Item>
-                  <Form.Item>
+                  <Form.Item style={{ marginBottom: 0 }}>
                     <Button type="primary" htmlType="submit" block loading={loading}>
                       注册
                     </Button>
@@ -142,7 +158,7 @@ const Login: React.FC = () => {
             },
           ]}
         />
-      </Card>
+      </div>
     </div>
   );
 };

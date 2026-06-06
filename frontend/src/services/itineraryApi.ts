@@ -50,7 +50,19 @@ export const itineraryApi = {
   delete: (id: string) => 
     apiClient.delete(`/itinerary/${id}`),
   
-  // 获取用户所有行程
+    // 获取用户所有行程
   getByUser: (userId: string) => 
     apiClient.get(`/itinerary/user/${userId}`),
+  
+  // 切换收藏状态
+  toggleFavorite: (id: string) =>
+    apiClient.post(`/itinerary/${id}/favorite`),
+  
+  // 发布行程
+  publish: (id: string) =>
+    apiClient.post(`/itinerary/${id}/publish`),
+  
+  // 保存为草稿
+  save: (id: string) =>
+    apiClient.post(`/itinerary/${id}/save`),
 };

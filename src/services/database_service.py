@@ -41,24 +41,24 @@ class RequirementService:
         ).first()
     
     @staticmethod
-    def update_requirement_status(db: Session, requirement_id: str, status: str, parsed_keywords: Dict[str, Any] = None) -> Optional[UserRequirement]:
+    def update_requirement_status(db: Session, requirement_id: str, status: str, parsed_keywords: Optional[Dict[str, Any]] = None) -> Optional[UserRequirement]:
         """更新需求状态"""
         requirement = db.query(UserRequirement).filter(
             UserRequirement.requirement_id == requirement_id
         ).first()
         
         if requirement:
-            requirement.status = status
-            if parsed_keywords:
-                requirement.parsed_keywords = parsed_keywords
-            requirement.updated_at = datetime.utcnow()
+            requirement.status = status  # type: ignore[attr-defined]
+        if parsed_keywords:
+            requirement.parsed_keywords = parsed_keywords  # type: ignore[attr-defined]
+            requirement.updated_at = datetime.utcnow()  # type: ignore[attr-defined]
             db.commit()
             db.refresh(requirement)
         
         return requirement
     
     @staticmethod
-    def get_user_requirements(db: Session, user_id: str, status: str = None) -> List[UserRequirement]:
+    def get_user_requirements(db: Session, user_id: str, status: Optional[str] = None) -> List[UserRequirement]:
         """获取用户的所有需求"""
         query = db.query(UserRequirement).filter(UserRequirement.user_id == user_id)
         
@@ -74,7 +74,7 @@ class TaskService:
     """任务管理服务"""
     
     @staticmethod
-    def create_task(db: Session, batch_id: str, requirement_id: str, agent_type: str, parameters: Dict[str, Any], task_id: str = None) -> Task:
+    def create_task(db: Session, batch_id: str, requirement_id: str, agent_type: str, parameters: Dict[str, Any], task_id: Optional[str] = None) -> Task:
         """创建新任务"""
         import uuid
         if task_id is None:
@@ -123,19 +123,19 @@ class TaskService:
         return db.query(Task).filter(Task.batch_id == batch_id).all()
     
     @staticmethod
-    def update_task_result(db: Session, task_id: str, status: str, result: Dict[str, Any] = None, error: str = None) -> Optional[Task]:
+    def update_task_result(db: Session, task_id: str, status: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> Optional[Task]:
         """更新任务结果"""
         task = db.query(Task).filter(Task.task_id == task_id).first()
         
         if task:
-            task.status = status
-            task.result = result
-            task.error = error
-            task.updated_at = datetime.utcnow()
+            task.status = status  # type: ignore[attr-defined]
+            task.result = result  #type: ignore[attr-defined]
+            task.error = error  #type: ignore[attr-defined]
+            task.updated_at = datetime.utcnow()  #type: ignore[attr-defined]
             
             # 如果是成功完成，设置进度为100%
             if status == "success":
-                task.progress = 100.0
+                task.progress = 100.0  #type: ignore[attr-defined]
             
             db.commit()
             db.refresh(task)
@@ -151,8 +151,8 @@ class TaskService:
             return {"status": "pending", "progress": 0.0, "completed": 0, "total": 0}
         
         total = len(tasks)
-        completed = sum(1 for t in tasks if t.status == "success")
-        failed = sum(1 for t in tasks if t.status == "failed")
+        completed = sum(1 for t in tasks if t.status == "success")  #type: ignore[attr-defined]
+        failed = sum(1 for t in tasks if t.status == "failed")  #type: ignore[attr-defined]
         
         progress = (completed / total * 100) if total > 0 else 0
         
@@ -179,8 +179,8 @@ class ItineraryService:
     
     @staticmethod
     def create_itinerary(db: Session, user_id: str, day_plans: List[Dict[str, Any]], 
-                        title: str = None, total_budget: float = None, 
-                        requirement_id: str = None) -> Itinerary:
+                        title: Optional[str] = None, total_budget: Optional[float] = None, 
+                        requirement_id: Optional[str] = None) -> Itinerary:
         """创建新行程"""
         import uuid
         itinerary_id = str(uuid.uuid4())
@@ -207,7 +207,7 @@ class ItineraryService:
         return db.query(Itinerary).filter(Itinerary.itinerary_id == itinerary_id).first()
     
     @staticmethod
-    def get_user_itineraries(db: Session, user_id: str, is_favorite: bool = None) -> List[Itinerary]:
+    def get_user_itineraries(db: Session, user_id: str, is_favorite: Optional[bool] = None) -> List[Itinerary]:
         """获取用户的行程列表"""
         query = db.query(Itinerary).filter(Itinerary.user_id == user_id)
         
@@ -226,7 +226,7 @@ class ItineraryService:
                 if hasattr(itinerary, key):
                     setattr(itinerary, key, value)
             
-            itinerary.updated_at = datetime.utcnow()
+            itinerary.updated_at = datetime.utcnow() #type: ignore[attr-defined]
             db.commit()
             db.refresh(itinerary)
         
@@ -238,8 +238,8 @@ class ItineraryService:
         itinerary = db.query(Itinerary).filter(Itinerary.itinerary_id == itinerary_id).first()
         
         if itinerary:
-            itinerary.is_favorite = not itinerary.is_favorite
-            itinerary.updated_at = datetime.utcnow()
+            itinerary.is_favorite = not itinerary.is_favorite #type: ignore[attr-defined]
+            itinerary.updated_at = datetime.utcnow()  #type: ignore[attr-defined]
             db.commit()
             db.refresh(itinerary)
         
@@ -279,8 +279,8 @@ class StaticDataService:
         return db.query(City).filter(City.city_name == city_name).first()
     
     @staticmethod
-    def get_attractions_by_city(db: Session, city_id: str, category: str = None, 
-                               min_rating: float = None) -> List[Attraction]:
+    def get_attractions_by_city(db: Session, city_id: str, category: Optional[str] = None, 
+                               min_rating: Optional[float] = None) -> List[Attraction]:
         """获取城市的景点列表"""
         query = db.query(Attraction).filter(Attraction.city_id == city_id)
         
@@ -293,7 +293,7 @@ class StaticDataService:
         return query.order_by(Attraction.rating.desc()).all()
     
     @staticmethod
-    def search_attractions(db: Session, keyword: str, city_id: str = None) -> List[Attraction]:
+    def search_attractions(db: Session, keyword: str, city_id: Optional[str] = None) -> List[Attraction]:
         """搜索景点（模糊匹配）"""
         query = db.query(Attraction).filter(Attraction.name.ilike(f"%{keyword}%"))
         
@@ -303,9 +303,9 @@ class StaticDataService:
         return query.all()
     
     @staticmethod
-    def get_hotels_by_city(db: Session, city_id: str, min_star: int = None, 
-                          max_price: float = None, price_range: str = None) -> List[Hotel]:
-        """获取城市的酒店列表"""
+    def get_hotels_by_city(db: Session, city_id: str, min_star: Optional[int] = None, 
+                          max_price: Optional[float] = None, price_range: Optional[str] = None) -> List[Hotel]:
+    
         query = db.query(Hotel).filter(Hotel.city_id == city_id)
         
         if min_star:
@@ -320,8 +320,8 @@ class StaticDataService:
         return query.order_by(Hotel.rating.desc()).all()
     
     @staticmethod
-    def get_restaurants_by_city(db: Session, city_id: str, cuisine_type: str = None,
-                               max_price: float = None) -> List[Restaurant]:
+    def get_restaurants_by_city(db: Session, city_id: str, cuisine_type: Optional[str] = None,
+                               max_price: Optional[float] = None) -> List[Restaurant]:
         """获取城市的餐厅列表"""
         query = db.query(Restaurant).filter(Restaurant.city_id == city_id)
         
@@ -334,7 +334,7 @@ class StaticDataService:
         return query.order_by(Restaurant.rating.desc()).all()
     
     @staticmethod
-    def get_locations_by_city(db: Session, city_id: str, category: str = None) -> List[Location]:
+    def get_locations_by_city(db: Session, city_id: str, category: Optional[str] = None) -> List[Location]:
         """获取城市的地点列表（交通枢纽等）"""
         query = db.query(Location).filter(Location.city_id == city_id)
         

@@ -1,0 +1,229 @@
+/* =====================================================
+
+   「旅行规划」手工感主题样式
+   设计意图：用旧地图、火车票、手账本的美学质感，
+   替代 AI 模板典型的平滑渐变与完美圆角。
+   每个选择都有注释说明如何打破"AI味"。
+   ===================================================== */
+
+/* ---------- 1. 全局 CSS 变量：有故事感的调色板 ---------- */
+:root {
+  /* 主色：旧纸张 + 褪色墨水，而非高饱和蓝紫 */
+  --ink-dark: #2c2420;            /* 深棕黑，像老式印刷油墨 */
+  --ink-mid: #5a4e48;             /* 暖灰褐，旧书页边缘 */
+  --ink-light: #8a7a70;           /* 浅棕灰 */
+  --paper: #f7f3ee;               /* 旧纸张底色 */
+  --paper-warm: #f0e8da;          /* 泛黄纸张 */
+  --paper-light: #faf7f2;         /* 米白 */
+  --stamp-red: #c45a4a;           /* 邮戳红，克制地作为强调色 */
+  --stamp-blue: #4a7a8c;          /* 褪色蓝墨水 */
+  --stamp-green: #6a8f6a;         /* 军绿，老地图用色 */
+  --border-faded: #e0d8ce;        /* 旧边框，不锋利 */
+  --shadow-warm: rgba(44, 36, 32, 0.08); /* 暖调阴影 */
+
+  /* 字体：标题衬线 × 正文无衬线，制造气质冲突 */
+  --font-title: 'Cormorant Garamond', 'Georgia', 'Times New Roman', serif;
+  --font-body: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+}
+
+/* ---------- 2. 全局基础样式 ---------- */
+body {
+  font-family: var(--font-body);
+  color: var(--ink-mid);
+  background-color: var(--paper);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 3. 标题：衬线体 + 刻意打破字距 ---------- */
+h1, h2, h3, h4, h5, h6,
+.ant-typography h1, .ant-typo h2, .ant-typography h3,
+.ant-typography h4 {
+  font-family: var(--font-title) !important;
+  font-weight: 600;
+  color: var(--ink-dark);
+  letter-spacing: -0.02em;  /* 标题极窄字距，与正文拉开反差 */
+}
+
+h1 { font-size: 3rem; line-height: 1.1; }
+h2 { font-size: 2rem; line-height: 1.2; }
+h3 { font-size: 1.5rem; line-height: 1.25; }
+
+/* ---------- 4. Ant Design 卡片：破圆角 + 手工感 ---------- */
+.ant-card {
+  border-radius: 0 !important;           /* 禁用 AI 最爱的 12px 圆角 */
+  border: 1px solid var(--border-faded) !important;
+  background: var(--paper-light);
+  position: relative;
+  transition: all 0.25s ease;
+}
+
+/* 卡片左上角模拟手工裁切的小缺角 */
+.ant-card::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 16px;
+  height: 16px;
+  background: var(--paper);              /* 与背景同色，制造"撕角"效果 */
+  clip-path: polygon(0 0, 0% 100%, 100% 0);
+  z-index: 1;
+}
+
+.ant-card-hoverable:hover {
+  box-shadow: 4px 6px 20px var(--shadow-warm);
+  transform: translateY(-2px);
+  border-color: var(--ink-light) !important;
+}
+
+.ant-card-actions {
+  background: var(--paper-warm) !important;
+  border-top: 1px solid var(--border-faded) !important;
+  border-radius: 0 !important;
+}
+
+.ant-card-actions > li {
+  border-right: 1px solid var(--border-faded) !important;
+}
+
+/* ---------- 5. 按钮：平面而不过度光滑 ---------- */
+.ant-btn-primary {
+  background: var(--ink-dark) !important;
+  border: none !important;
+  border-radius: 0 !important;           /* 直角按钮更"手工" */
+  color: var(--paper-light) !important;
+  font-family: var(--font-title);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  box-shadow: none !important;
+  transition: all 0.2s;
+}
+
+.ant-btn-primary:hover {
+  background: var(--stamp-red) !important; /* 邮戳红作为强调 */
+  transform: translateY(-1px);
+}
+
+.ant-btn-default {
+  border-radius: 0 !important;
+  border-color: var(--border-faded) !important;
+  color: var(--ink-mid);
+  background: transparent !important;
+}
+
+.ant-btn-default:hover {
+  border-color: var(--ink-dark) !important;
+  color: var(--ink-dark) !important;
+}
+
+/* ---------- 6. 标签(Tag)：手写感 ---------- */
+.ant-tag {
+  border-radius: 2px !important;         /* 微圆角而非胶囊 */
+  font-family: var(--font-body);
+  font-size: 12px !important;
+  border: 1px solid var(--border-faded) !important;
+  padding: 1px 8px;
+}
+
+/* ---------- 7. 徽章/统计数值 ---------- */
+.ant-statistic {
+  font-family: var(--font-title);
+}
+
+.ant-statistic-title {
+  font-family: var(--font-body);
+  font-size: 12px !important;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-light);
+}
+
+.ant-statistic-content {
+  font-family: var(--font-title);
+  color: var(--ink-dark) !important;
+}
+
+/* ---------- 8. 输入框 ---------- */
+.ant-input, .ant-input-password, .ant-input-number {
+  border-radius: 0 !important;
+  border-color: var(--border-faded) !important;
+  background: var(--paper-light);
+}
+
+.ant-input:hover, .ant-input:focus {
+  border-color: var(--ink-mid) !important;
+}
+
+/* ---------- 9. 模态框 ---------- */
+.ant-modal-content {
+  border-radius: 0 !important;
+  border: 1px solid var(--border-faded);
+}
+
+.ant-modal-header {
+  border-radius: 0 !important;
+  background: var(--paper-warm);
+  border-bottom: 1px solid var(--border-faded);
+}
+
+/* ---------- 10. 时间轴 (Timeline) ---------- */
+.ant-timeline-item-tail {
+  border-left: 1px dashed var(--border-faded) !important; /* 虚线更像手账 */
+}
+
+.ant-timeline-item-head {
+  background: var(--paper) !important;
+  border-color: var(--ink-light) !important;
+}
+
+/* ---------- 11. 菜单 ---------- */
+.ant-menu-dark {
+  background: var(--ink-dark) !important;
+}
+
+.ant-menu-item-selected {
+  background: var(--stamp-blue) !important;
+}
+
+/* ---------- 12. 描述列表 ---------- */
+.ant-descriptions-item-label {
+  color: var(--ink-light) !important;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* ---------- 13. 分割线 ---------- */
+.ant-divider {
+  border-color: var(--border-faded) !important;
+}
+
+/* ---------- 14. 空状态 ---------- */
+.ant-empty-description {
+  color: var(--ink-light);
+}
+
+/* ---------- 15. 通知 ---------- */
+.ant-message-notice-content {
+  border-radius: 0 !important;
+  border: 1px solid var(--border-faded);
+}
+
+/* ---------- 16. 弹出确认 ---------- */
+.ant-popconfirm {
+  font-family: var(--font-body);
+}
+
+/* ---------- 17. 导航栏品牌标识调整 ---------- */
+.ant-layout-header {
+  background: var(--ink-dark) !important;
+  border-bottom: 2px solid var(--stamp-red) !important; /* 一条红线下划线，像旧报纸报头 */
+}
+
+/* ---------- 18. 页脚 ---------- */
+.ant-layout-footer {
+  background: var(--paper-warm) !important;
+  border-top: 1px solid var(--border-faded);
+  color: var(--ink-light);
+  font-size: 13px;
+}
