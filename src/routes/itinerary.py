@@ -45,10 +45,9 @@ async def create_itinerary(request: ItineraryCreateRequest, db: Session = Depend
 async def get_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
     """获取行程详情 - 从数据库查询"""
     itinerary = ItineraryService.get_itinerary(db, itinerary_id)
-    
     if itinerary is None:
         return error_response(code=404, msg="行程不存在")
-    
+
     # 确保day_plans是有效的JSON数组
     day_plans = itinerary.day_plans if isinstance(itinerary.day_plans, list) else []
     
@@ -79,6 +78,15 @@ async def get_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
     city_name = requirement.requirement_data.get("city_name", "") if requirement else ""
     travel_days = requirement.requirement_data.get("travel_days", 1) if requirement else 1
 
+    # 从 day_plans 中提取协商事件（已持久化）
+    negotiation_events = []
+    if len(day_plans) > 0 and isinstance(day_plans[0], dict):
+        neg = day_plans[0].get("negotiation")
+        if neg and isinstance(neg, dict):
+            neg_events = neg.get("events", [])
+            if neg_events:
+                negotiation_events = neg_events
+
     return success_response(
         data={
             "itinerary_id": itinerary.itinerary_id,
@@ -90,6 +98,7 @@ async def get_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
             "total_budget": itinerary.total_budget,
             "actual_cost": itinerary.actual_cost,
             "day_plans": day_plans,
+            "negotiation_events": negotiation_events,
             "status": itinerary.status,
             "is_favorite": itinerary.is_favorite,
             "created_at": itinerary.created_at.isoformat() if itinerary.created_at is not None else None,
@@ -118,7 +127,7 @@ async def update_itinerary(itinerary_id: str, request: ItineraryUpdateRequest, d
     
     itinerary = ItineraryService.update_itinerary(db, itinerary_id, updates)
     
-    if not itinerary:
+    if itinerary is None:
         return error_response(code=404, msg="行程不存在")
     
     return success_response(
@@ -192,7 +201,7 @@ async def toggle_favorite(itinerary_id: str, db: Session = Depends(get_db)):
     """切换行程收藏状态 - ⭐ 新增功能"""
     itinerary = ItineraryService.toggle_favorite(db, itinerary_id)
     
-    if not itinerary:
+    if itinerary is None:
         return error_response(code=404, msg="行程不存在")
     
     return success_response(
@@ -208,7 +217,7 @@ async def save_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
     """保存行程为草稿 - ⭐ 新增功能"""
     itinerary = ItineraryService.update_itinerary(db, itinerary_id, {"status": "saved"})
     
-    if not itinerary:
+    if itinerary is None:
         return error_response(code=404, msg="行程不存在")
     
     return success_response(
@@ -218,13 +227,122 @@ async def save_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{itinerary_id}/publish")
 async def publish_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
-    """发布行程 - ⭐ 新增功能"""
+    """发布行程 - 新增功能"""
     itinerary = ItineraryService.update_itinerary(db, itinerary_id, {"status": "published"})
     
-    if not itinerary:
+    if itinerary is None:
         return error_response(code=404, msg="行程不存在")
     
     return success_response(
         data={"itinerary_id": itinerary_id, "status": "published"},
         msg="行程发布成功"
+    )
+
+
+# ============== 协商事件相关接口 ==============
+
+@router.get("/{itinerary_id}/negotiation-events")
+async def get_negotiation_events(itinerary_id: str, db: Session = Depends(get_db)):
+    """
+    获取行程的协商事件日志
+
+    从 itinerary.day_plans 的 negotiation.events 字段提取，
+    或从独立的 negotiation_events 字段读取。
+
+    响应示例:
+    {
+        "code": 200,
+        "data": {
+            "negotiation_events": [
+                {
+                    "eventId": "xxx",
+                    "sessionId": "task_xxx",
+                    "timestamp": 1717000000000,
+                    "eventType": "CFP",
+                    "fromAgent": "dispatcher",
+                    "toAgent": "all_vehicles",
+                    "phase": "CFP",
+                    "proposal": {},
+                    "utility": {"dispatcher": 1.0, "vehicle": 1.0},
+                    "routePreview": {}
+                },
+                ...
+            ]
+        }
+    }
+    """
+    itinerary = ItineraryService.get_itinerary(db, itinerary_id)
+    if itinerary is None:
+        return error_response(code=404, msg="行程不存在")
+
+    events = []
+
+    # 方案1：从 day_plans 中内嵌的 negotiation 字段读取
+    day_plans = itinerary.day_plans if isinstance(itinerary.day_plans, list) else []
+    for plan in day_plans:
+        if isinstance(plan, dict):
+            neg = plan.get("negotiation")
+            if neg and isinstance(neg, dict):
+                evts = neg.get("events", [])
+                if evts:
+                    events.extend(evts)
+
+        # 方案2：从行程的独立 negotiation_events 字段读取（DB 字段）
+    if len(events) == 0:
+        try:
+            events = itinerary.negotiation_events or []  # type: ignore
+        except (AttributeError, Exception):
+            events = []
+
+    # 方案3：从 event_bus 内存中读取
+    if len(events) == 0:
+        try:
+            from src.services.negotiation_event_bus import event_bus
+            # 用 itinerary_id 作为 sessionId 尝试
+            events = event_bus.get_session_log(itinerary_id)
+        except Exception:
+            pass
+
+    return success_response(
+        data={"negotiation_events": events},
+        msg=f"获取到 {len(events)} 个协商事件"
+    )
+
+
+@router.post("/{itinerary_id}/save-negotiation")
+async def save_negotiation_events(
+    itinerary_id: str,
+    request_data: dict,
+    db: Session = Depends(get_db),
+):
+    """
+    保存协商事件日志到行程
+
+    请求示例:
+    {
+        "events": [...]
+    }
+    """
+    events = request_data.get("events", [])
+    if len(events) == 0:
+        return error_response(code=400, msg="缺失 events 数据")
+
+    itinerary = ItineraryService.get_itinerary(db, itinerary_id)
+    if itinerary is None:
+        return error_response(code=404, msg="行程不存在")
+
+    # 保存到 day_plans 的 negotiation.events 字段
+    day_plans = itinerary.day_plans if isinstance(itinerary.day_plans, list) else []
+    if len(day_plans) > 0:
+        first_plan = day_plans[0]
+        if isinstance(first_plan, dict):
+            if "negotiation" not in first_plan:
+                first_plan["negotiation"] = {}
+            first_plan["negotiation"]["events"] = events
+
+    ItineraryService.update_itinerary(db, itinerary_id, {"day_plans": day_plans})
+
+    return success_response(
+        data={"saved_count": len(events)},
+        msg=f"协商事件保存成功"
     )

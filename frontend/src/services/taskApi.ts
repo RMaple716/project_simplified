@@ -36,6 +36,14 @@ export interface TaskStatusData {
   total: number;
   message: string;
   itinerary_id?: string;
+  /** 后端运行时动态返回的协商事件集合 */
+  negotiation_events?: any[];
+  /** 后端运行时动态返回的协商信息 */
+  negotiation?: {
+    events: any[];
+    [key: string]: any;
+  };
+  [key: string]: any; // 允许其他动态字段
 }
 
 export const taskApi = {

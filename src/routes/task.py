@@ -361,7 +361,7 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                             from src.services.database_service import ItineraryService
                             from src.routes.integration import integrate_agent_results_to_daily_plans
 
-                            # 收集所有子任务的结果
+                            # 收集所有子任务的结果（包括失败的，用空数据代替）
                             attractions_result = None
                             hotel_result = None
                             food_result = None
@@ -417,32 +417,42 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
 
                             day_plans = integrate_agent_results_to_daily_plans(agent_results, structured_req)
 
-                            # ===== 协商修复（在新事件循环中正确 await）=====
+                            # ===== 协商修复 + 路线优化（在新事件循环中正确 await）=====
+                            # 注意：路线优化已融入 negotiate_and_fix 的每轮迭代中（作为策略0）
+                            negotiation_events_to_save = []
                             try:
                                 from src.services.negotiation_service import negotiate_and_fix
                                 backup_data = {"attractions": attractions_data}
+                                structured_req_with_task = dict(structured_req)
+                                structured_req_with_task["task_id"] = batch_id
                                 negotiated = await negotiate_and_fix(
                                     day_plans=day_plans,
-                                    structured_requirement=structured_req,
+                                    structured_requirement=structured_req_with_task,
                                     backup_data=backup_data,
-                                    max_iterations=5
+                                    max_iterations=5,
+                                    optimize_route=True,
+                                    use_real_traffic=True
                                 )
                                 if negotiated["fully_resolved"]:
                                     print(f"[任务执行] ✓ 协商修复成功，{negotiated['iteration_count']}轮完成")
                                 else:
                                     print(f"[任务执行] ⚠ 协商修复完成，仍有未解决冲突")
                                 day_plans = negotiated["day_plans"]
+                                # 从返回结果中提取协商事件（比从 event_bus 重新获取更可靠）
+                                negotiation_events_to_save = negotiated.get("negotiation_events", [])
                             except Exception as e:
+                                import traceback
                                 print(f"[任务执行] 协商修复异常: {e}")
+                                traceback.print_exc()
 
-                            # ===== 真实路线优化（在新事件循环中正确 await）=====
-                            try:
-                                from src.services.negotiation_service import optimize_real_route
-                                for i, plan in enumerate(day_plans):
-                                    day_plans[i] = await optimize_real_route(plan, mode="transit")
-                                print(f"[任务执行] ✓ 真实路线优化完成")
-                            except Exception as e:
-                                print(f"[任务执行] 真实路线优化失败(使用默认排序): {e}")
+                            # ===== 将协商事件持久化到 day_plans 中（存入DB）=====
+                            # 这样即使用户刷新页面或重新打开行程详情页，协商事件仍然可用
+                            if negotiation_events_to_save and len(day_plans) > 0:
+                                if isinstance(day_plans[0], dict):
+                                    if "negotiation" not in day_plans[0]:
+                                        day_plans[0]["negotiation"] = {}
+                                    day_plans[0]["negotiation"]["events"] = negotiation_events_to_save
+                                    print(f"[任务执行] 已持久化 {len(negotiation_events_to_save)} 个协商事件到行程数据")
 
                             # 创建行程
                             itinerary = ItineraryService.create_itinerary(
@@ -544,6 +554,14 @@ async def get_task_status(task_id: str, db: Session = Depends(get_db)):
             requirement_id = batch_tasks[0].requirement_id
             itinerary = db.query(Itinerary).filter(Itinerary.requirement_id == requirement_id).first()
 
+        # 从 event_bus 获取协商事件
+        negotiation_events = []
+        try:
+            from src.services.negotiation_event_bus import event_bus
+            negotiation_events = event_bus.get_session_log(task_id) or []
+        except Exception:
+            pass
+
         return success_response(data={
             "task_id": task_id,
             "status": progress_info["status"],
@@ -552,7 +570,8 @@ async def get_task_status(task_id: str, db: Session = Depends(get_db)):
             "failed": progress_info["failed"],
             "total": progress_info["total"],
             "message": f"已完成 {progress_info['completed']}/{progress_info['total']} 个子任务",
-            "itinerary_id": itinerary.itinerary_id if itinerary else None
+            "itinerary_id": itinerary.itinerary_id if itinerary else None,
+            "negotiation_events": negotiation_events,
         }, msg="获取成功")
 
     # 尝试作为单个任务ID查询

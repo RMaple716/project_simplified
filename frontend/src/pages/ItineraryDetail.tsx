@@ -38,6 +38,8 @@ import {
   SaveOutlined,
   CarOutlined
 } from '@ant-design/icons';
+import NegotiationVisualizer from '../components/NegotiationVisualizer';
+import { extractEventsFromItinerary } from '../services/negotiationApi';
 import { useNavigate, useParams } from 'react-router-dom';
 import { itineraryApi, Itinerary } from '../services/itineraryApi';
 import dayjs from 'dayjs';
@@ -1135,6 +1137,12 @@ const ItineraryDetail: React.FC = () => {
       ) : (
         <Empty description="暂无行程安排" />
       )}
+
+      {/* 协商可视化面板 - 从 itinerary 数据中提取事件 */}
+      <NegotiationVisualizer
+        events={extractEventsFromItinerary(itinerary)}
+        showFullPanel={true}
+      />
 
       <Divider />
       <Space>

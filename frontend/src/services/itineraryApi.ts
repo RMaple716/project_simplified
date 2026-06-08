@@ -28,6 +28,8 @@ export interface Itinerary {
   travel_days: number;
   total_budget?: number;
   day_plans?: DayPlan[];
+  /** 协商事件（来自 day_plans[0].negotiation.events 或直接来自 DB） */
+  negotiation_events?: any[];
   status?: string; // draft/saved/published
   created_at?: string;
   updated_at?: string;

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Typography, Button, Progress, Card, Spin, Alert, message } from 'antd';
+import { Typography, Button, Progress, Card, Alert, message } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { taskApi } from '../services';
 import { workflowLogger } from '../utils/workflowlogger';
+import NegotiationVisualizer from '../components/NegotiationVisualizer';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -15,12 +16,12 @@ interface TaskInfo {
   failed: number;
   message: string;
   itinerary_id?: string;  // 添加行程ID字段
+  negotiation_events?: any[];  // 协商事件
 }
 
 const TaskStatus: React.FC = () => {
   const navigate = useNavigate();
   const { taskId } = useParams();
-  const [loading, setLoading] = useState(true);
   const [taskInfo, setTaskInfo] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +42,7 @@ const TaskStatus: React.FC = () => {
           console.log('任务状态数据:', data); // 添加调试日志
 
           // 构建任务信息对象
-          const taskInfoData: TaskInfo = {
+        const taskInfoData: TaskInfo = {
             task_id: data.task_id || taskId,
             status: data.status || 'pending',
             progress: typeof data.progress === 'number' ? data.progress : 0,
@@ -49,7 +50,8 @@ const TaskStatus: React.FC = () => {
             total: typeof data.total === 'number' ? data.total : 0,
             failed: typeof data.failed === 'number' ? data.failed : 0,
             message: data.message || '正在处理中...',
-            itinerary_id: data.itinerary_id
+            itinerary_id: data.itinerary_id,
+            negotiation_events: data.negotiation_events || []
           };
 
           setTaskInfo(taskInfoData);
@@ -59,8 +61,7 @@ const TaskStatus: React.FC = () => {
           workflowLogger.logKeyData('itinerary_id', taskInfoData.itinerary_id);
 
                     // 如果任务完成,停止轮询（但 success 且 itinerary_id 为空时继续等待）
-          if (taskInfoData.status === 'failed') {
-            setLoading(false);
+                    if (taskInfoData.status === 'failed') {
             workflowLogger.endWorkflow('failed', `任务失败: ${taskInfoData.status}`);
             return;
           }
@@ -71,8 +72,6 @@ const TaskStatus: React.FC = () => {
               workflowLogger.logKeyData('itinerary_id_pending', 'itinerary_id 尚为空，继续轮询等待...');
               return; // 不停止轮询，等待下一次
             }
-
-            setLoading(false);
 
             setTimeout(() => {
               // 使用行程ID进行跳转
@@ -94,8 +93,7 @@ const TaskStatus: React.FC = () => {
       } catch (err) {
         workflowLogger.logError('task_polling', err);
         console.error('获取任务状态失败:', err);
-        setError('获取任务状态失败');
-        setLoading(false);
+                setError('获取任务状态失败');
         workflowLogger.endWorkflow('failed', '获取任务状态失败');
       }
     };
@@ -127,13 +125,12 @@ const TaskStatus: React.FC = () => {
     );
   }
 
-  return (
+    return (
     <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
-            <Spin spinning={loading}>
         <Card>
           <Title level={3}>智能规划进度</Title>
 
-          {taskInfo && (
+          {taskInfo ? (
             <>
               <Paragraph>
                 <Text strong>任务ID:</Text> {taskInfo.task_id}
@@ -161,6 +158,19 @@ const TaskStatus: React.FC = () => {
                 )}
               </div>
 
+                 {/* 协商过程可视化（运行中或已完成时显示） */}
+                          {(taskInfo.status === 'running' || taskInfo.status === 'success') && (
+                            <div style={{ marginTop: 24, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+                              <Text strong style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
+                                协商修复过程
+                              </Text>
+                          <NegotiationVisualizer
+                                events={taskInfo.negotiation_events || []}
+                                showFullPanel={taskInfo.status === 'running' || taskInfo.status === 'success'}
+                              />
+                            </div>
+                          )}
+
               {taskInfo.status === 'success' && (
                 <Alert
                   message="规划完成"
@@ -186,9 +196,12 @@ const TaskStatus: React.FC = () => {
                 />
               )}
             </>
+          ) : (
+            <Paragraph style={{ marginTop: 24 }}>
+              <Text type="secondary">正在获取任务状态...</Text>
+            </Paragraph>
           )}
         </Card>
-      </Spin>
     </div>
   );
 };

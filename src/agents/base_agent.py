@@ -41,12 +41,20 @@ class BaseAgent(ABC):
     def _parse_json_response(self, response_text: str) -> Dict[str, Any]:
         """解析JSON格式的响应"""
         import json
+        import re
         try:
             return json.loads(response_text)
         except json.JSONDecodeError:
             # 尝试提取JSON代码块
-            import re
             json_match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
+            # 尝试提取最外层的 {} 块
+            brace_match = re.search(r'\{[\s\S]*\}', response_text)
+            if brace_match:
+                candidate = brace_match.group(0)
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    pass
             raise ValueError(f"无法解析响应为JSON: {response_text}")

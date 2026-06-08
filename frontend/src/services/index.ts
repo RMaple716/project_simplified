@@ -76,3 +76,7 @@ export type {
   GeocodeRequest,
   GeocodeResponse
 } from './navigationApi';
+
+// 新增：协商可视化API
+export { negotiationApi, extractEventsFromItinerary } from './negotiationApi';
+export type { NegotiationLogEntry, NegotiationResult } from './negotiationApi';

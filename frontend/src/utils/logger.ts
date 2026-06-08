@@ -17,7 +17,15 @@ export interface LogConfig {
 }
 
 class Logger {
-  private isDevelopment = process.env.NODE_ENV === 'development';
+  private isDevelopment: boolean;
+
+  constructor() {
+    // 安全检测 NODE_ENV（Vite 会编译时替换，TypeScript 环境可能无 process）
+    this.isDevelopment = 
+      typeof (import.meta as any)?.env?.DEV !== 'undefined' 
+        ? (import.meta as any).env.DEV === true
+        : true;
+  }
 
   private formatLog(level: LogLevel, tag: string, message: string): string {
     const timestamp = new Date().toISOString();

@@ -3,6 +3,7 @@ import requirementReducer from './slices/requirementSlice';
 import itineraryReducer from './slices/itinerarySlice';
 import uiReducer from './slices/uiSlice';
 import authReducer from './slices/authSlice';
+import negotiationReducer from './slices/negotiationSlice';
 
 const store = configureStore({
   reducer: {
@@ -10,6 +11,7 @@ const store = configureStore({
     itinerary: itineraryReducer,
     ui: uiReducer,
     auth: authReducer,
+    negotiation: negotiationReducer,
   },
 });
 

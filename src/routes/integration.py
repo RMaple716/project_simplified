@@ -549,7 +549,8 @@ async def combine_itinerary(request_data: Dict[str, Any]):
                     "applied": negotiation_result is not None,
                     "iteration_count": (negotiation_result or {}).get("iteration_count", 0),
                     "fully_resolved": (negotiation_result or {}).get("fully_resolved", True),
-                    "log": (negotiation_result or {}).get("negotiation_log", [])
+                    "log": (negotiation_result or {}).get("negotiation_log", []),
+                    "events": (negotiation_result or {}).get("negotiation_events", [])
                 } if negotiation_result else None
             },
             msg="行程整合成功"

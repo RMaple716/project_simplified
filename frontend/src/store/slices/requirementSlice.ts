@@ -1,5 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { Requirement } from '../services/requirementApi';
+import { Requirement } from '../../services/requirementApi';
 
 interface RequirementState {
   currentRequirement: Requirement | null;

@@ -1,11 +1,76 @@
 """行程校验相关路由"""
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from fastapi import APIRouter
 from src.models.response import success_response, error_response
 from src.models.request import TimeConflictRequest, TimeConflictResponse, ItineraryValidateRequest, ItineraryValidateResponse, ConflictItem
 
 router = APIRouter(prefix="/api/v1/validation", tags=["行程校验"])
+
+
+# 中国星期名称映射
+WEEKDAY_NAMES = {
+    0: "周一", 1: "周二", 2: "周三", 3: "周四",
+    4: "周五", 5: "周六", 6: "周日", 7: "周日"
+}
+
+CLOSED_DAY_KEYWORDS = {
+    "周一": 0, "星期二": 1, "周二": 1, "星期三": 2, "周三": 2,
+    "星期四": 3, "周四": 3, "星期五": 4, "周五": 4,
+    "星期六": 5, "周六": 5, "星期日": 6, "周日": 6, "星期天": 6
+}
+
+
+def parse_closed_days(opening_hours_str: str) -> List[int]:
+    """
+    从开放时间字符串中解析闭馆日（如"周一闭馆"）
+
+    支持格式:
+    - "09:00-17:30（周一闭馆）" -> [0]
+    - "09:00-18:00（周二至周三闭馆）" -> [1, 2]
+    - "08:00-17:00（周末闭馆）" -> [5, 6]
+
+    Args:
+        opening_hours_str: 开放时间字符串
+
+    Returns:
+        闭馆日星期列表（0=周一, 6=周日）
+    """
+    if not opening_hours_str:
+        return []
+
+    closed_days = []
+    import re
+    # 优先匹配括号内的闭馆信息
+    match = re.search(r'[（(](.*?闭[馆门]?.*?)[)）]', opening_hours_str)
+    if not match:
+        # 也尝试直接匹配 "周X闭馆"
+        match = re.search(r'(周[一二三四五六日天].*?闭[馆门]?)', opening_hours_str)
+
+    if match:
+        closed_text = match.group(1) if match.lastindex else match.group(0)
+
+        # 处理 "周一闭馆"
+        for day_name, day_num in CLOSED_DAY_KEYWORDS.items():
+            if day_name in closed_text:
+                closed_days.append(day_num)
+
+        # 处理范围格式 "周二至周三闭馆"
+        range_match = re.search(r'(周[一二三四五六日天])\s*[至到\-~]\s*(周[一二三四五六日天])', closed_text)
+        if range_match and not closed_days:
+            start_day = CLOSED_DAY_KEYWORDS.get(range_match.group(1))
+            end_day = CLOSED_DAY_KEYWORDS.get(range_match.group(2))
+            if start_day is not None and end_day is not None:
+                if start_day <= end_day:
+                    closed_days = list(range(start_day, end_day + 1))
+                else:
+                    closed_days = list(range(start_day, 7)) + list(range(0, end_day + 1))
+
+        # 处理 "周末闭馆"
+        if "周末" in closed_text and not closed_days:
+            closed_days = [5, 6]
+
+    return sorted(set(closed_days))
 
 
 # ============== 时间冲突检测核心算法 ==============
@@ -27,6 +92,13 @@ def parse_time_to_minutes(time_str: str) -> int:
     Returns:
         分钟数
     """
+    # 安全处理：如果不是字符串则尝试转换或返回默认值
+    if not isinstance(time_str, str):
+        try:
+            return int(time_str)
+        except (ValueError, TypeError):
+            return 540  # 默认9:00
+    
     time_slots = {
         "morning": 540,    # 9:00
         "afternoon": 840,  # 14:00
@@ -74,6 +146,13 @@ def parse_duration_to_minutes(duration_str: str) -> int:
     """
     if not duration_str:
         return 120  # 默认2小时
+    
+    # 安全处理：如果不是字符串则尝试转换
+    if not isinstance(duration_str, str):
+        try:
+            return int(duration_str)
+        except (ValueError, TypeError):
+            return 120
     
     # 处理范围格式 "2-3小时"
     if "-" in duration_str and "小时" in duration_str:
@@ -279,65 +358,98 @@ def format_minutes(minutes: int) -> str:
 def parse_opening_hours(opening_hours_str: str):
     """
     解析开放时间字符串为开始和结束时间（分钟）
-    
+
     支持格式:
     - "08:00-17:00" -> (480, 1020)
     - "09:00-18:00" -> (540, 1080)
     - "全天开放" -> (0, 1440)
     - "不开放" -> None
-    
+    - "09:00-17:30（周一闭馆）" -> (540, 1050)（自动去除闭馆备注）
+
     Args:
         opening_hours_str: 开放时间字符串
-    
+
     Returns:
         (start_minutes, end_minutes) 或 None
     """
     if not opening_hours_str or opening_hours_str in ["不开放", "关闭", ""]:
         return None
-    
+
     # 处理特殊格式
     if "全天" in opening_hours_str:
         return (0, 1440)
-    
+
+    # 去除括号内的闭馆信息再解析时间
+    import re
+    clean_str = re.sub(r'[（(][^)）]*闭[^)）]*[)）]', '', opening_hours_str).strip()
+    if not clean_str:
+        return None
+
     # 尝试解析 "HH:MM-HH:MM" 格式
     try:
-        parts = opening_hours_str.split("-")
+        parts = clean_str.split("-")
         if len(parts) == 2:
             start_minutes = parse_time_to_minutes(parts[0].strip())
             end_minutes = parse_time_to_minutes(parts[1].strip())
             return (start_minutes, end_minutes)
     except:
         pass
-    
+
     return None
 
 
-def check_attraction_opening_hours(attraction: Dict[str, Any], visit_start: int, visit_end: int) -> List[Dict[str, Any]]:
+def check_attraction_opening_hours(
+    attraction: Dict[str, Any],
+    visit_start: int,
+    visit_end: int,
+    day_date: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
-    检查景点游览时间是否在开放时间内
-    
+    检查景点游览时间是否在开放时间内（增强版：支持闭馆日检测）
+
     Args:
         attraction: 景点信息（包含opening_hours字段）
         visit_start: 计划游览开始时间（分钟）
         visit_end: 计划游览结束时间（分钟）
-    
+        day_date: 当前日期字符串 (YYYY-MM-DD)，用于判断是否闭馆日
+
     Returns:
         冲突列表
     """
     conflicts = []
     opening_hours_str = attraction.get("opening_hours")
-    
+
     if not opening_hours_str:
-        # 如果没有开放时间信息，跳过检查
         return conflicts
-    
+
+    attraction_name = attraction.get("name", "未知景点")
+
+    # ---- 闭馆日检测 ----
+    closed_days = parse_closed_days(opening_hours_str)
+    if closed_days and day_date:
+        try:
+            dt = datetime.strptime(day_date, "%Y-%m-%d")
+            weekday = dt.weekday()
+            if weekday in closed_days:
+                conflicts.append({
+                    "type": "closed_day",
+                    "description": f"'{attraction_name}' 在{day_date}（{WEEKDAY_NAMES.get(weekday, '')}）闭馆（开放时间: {opening_hours_str}）",
+                    "severity": "error",
+                    "activities": [attraction_name],
+                    "closed_days": closed_days,
+                    "current_weekday": weekday,
+                })
+                return conflicts
+        except (ValueError, TypeError):
+            pass
+
+    # ---- 开放时间检测 ----
     open_times = parse_opening_hours(opening_hours_str)
     if not open_times:
         return conflicts
-    
+
     open_start, open_end = open_times
-    attraction_name = attraction.get("name", "未知景点")
-    
+
     # 检查是否完全在开放时间外
     if visit_end <= open_start or visit_start >= open_end:
         conflicts.append({
@@ -354,7 +466,7 @@ def check_attraction_opening_hours(attraction: Dict[str, Any], visit_start: int,
             "severity": "warning",
             "activities": [attraction_name]
         })
-    
+
     return conflicts
 
 
@@ -476,8 +588,8 @@ def check_itinerary_conflicts(day_plans: List[Dict[str, Any]], structured_requir
             duration_minutes = parse_duration_to_minutes(duration_str)
             end_minutes = start_minutes + duration_minutes
             
-            # 检查开放时间
-            opening_conflicts = check_attraction_opening_hours(attraction, start_minutes, end_minutes)
+            # 检查开放时间（传入日期支持闭馆日检测）
+            opening_conflicts = check_attraction_opening_hours(attraction, start_minutes, end_minutes, day_date=date if "-" in str(date) else None)
             for conflict in opening_conflicts:
                 conflict["day"] = day_num
                 conflict["date"] = date
@@ -582,11 +694,12 @@ async def negotiate_itinerary(request: ItineraryValidateRequest):
             data={
                 "day_plans": result["day_plans"],
                 "negotiation": result.get("negotiation_log", []),
-                "iteration_count": result["iteration_count"],
-                "fully_resolved": result["fully_resolved"],
-                "final_validation": result.get("validation", {})
+                "iteration_count": result.get("iteration_count", 0),
+                "fully_resolved": result.get("fully_resolved", False),
+                "final_validation": result.get("validation", {}),
+                "negotiation_events": result.get("negotiation_events", [])
             },
-            msg=f"协商{'成功' if result['fully_resolved'] else '完成（部分冲突未解决）'}"
+            msg=f"协商{'成功' if result.get('fully_resolved', False) else '完成（部分冲突未解决）'}"
         )
 
     except Exception as e:
