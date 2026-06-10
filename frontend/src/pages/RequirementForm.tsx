@@ -6,7 +6,7 @@ import { RootState } from '../store';
 import { nlpApi, requirementApi } from '../services';
 import { parseNaturalDate } from '../utils/helpers';
 import type { Dayjs } from 'dayjs';
-import { BulbOutlined, RobotOutlined } from '@ant-design/icons';
+import { FormOutlined, CompassOutlined, OrderedListOutlined } from '@ant-design/icons';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -113,7 +113,7 @@ const RequirementForm: React.FC = () => {
         filledFields.push('preferences');
         highlightExtractedField('preferences');
       }
-      // 大模型特有的出行类型提取
+     // 大模型特有的出行类型提取
       if (result.travel_type && TRAVEL_TYPE_MAP[result.travel_type]) {
         form.setFieldValue('travel_type', result.travel_type);
         filledFields.push('travel_type');
@@ -122,7 +122,7 @@ const RequirementForm: React.FC = () => {
 
       if (filledFields.length > 0) {
         setShowExtractSummary(true);
-        message.success(`🤖 智能提取成功！已自动填充 ${filledFields.length} 个字段`);
+        message.success(`智能提取成功！已自动填充 ${filledFields.length} 个字段`);
       } else {
         message.info('未能从描述中提取到结构化信息，请手动填写');
       }
@@ -199,8 +199,8 @@ const RequirementForm: React.FC = () => {
 
       // response已经是完整的响应对象，不需要再访问.data
       
-      if (response.code === 200) {
-        message.success('✅ 需求提交成功！');
+            if (response.code === 200) {
+        message.success('需求提交成功！');
 
         const requirementId = response.data.requirement_id;
 
@@ -228,8 +228,8 @@ const RequirementForm: React.FC = () => {
 
         console.log('任务分解响应:', decomposeData);
 
-        if (decomposeData.code === 200) {
-          message.success('🎉 任务分解成功！正在生成专属行程...');
+          if (decomposeData.code === 200) {
+          message.success('任务分解成功！正在生成专属行程...');
           setTimeout(() => {
             navigate(`/task/${decomposeData.data.task_id}`);
           }, 1500);
@@ -253,8 +253,8 @@ const RequirementForm: React.FC = () => {
       <Card
         title={
           <Space>
-            <RobotOutlined style={{ fontSize: 20, color: '#1890ff' }} />
-            <span>AI 智能旅游需求规划</span>
+            <CompassOutlined style={{ fontSize: 20, color: 'var(--stamp-blue, #4a7a8c)' }} />
+            <span>智能旅游需求规划</span>
           </Space>
         }
       >
@@ -263,7 +263,7 @@ const RequirementForm: React.FC = () => {
           <Alert
             message={
               <Space>
-                <BulbOutlined style={{ fontSize: 16 }} />
+              <FormOutlined style={{ fontSize: 16, color: 'var(--stamp-green, #6a8f6a)' }} />
                 <Text strong>已智能提取到以下信息</Text>
               </Space>
             }
@@ -296,14 +296,14 @@ const RequirementForm: React.FC = () => {
             name="natural_language"
             label={
               <Space>
-                <RobotOutlined style={{ color: '#1890ff' }} />
-                <span>自然语言描述您的旅行需求</span>
-              </Space>
+              <FormOutlined style={{ color: 'var(--stamp-blue, #4a7a8c)' }} />
+              <span>自然语言描述您的旅行需求</span>
+            </Space>
             }
             tooltip="用日常语言描述您的旅行计划，AI将自动提取关键信息"
           >
             <TextArea
-              placeholder={'🌟 试试这样说：\n"下周五去西安看兵马俑，两个人，预算两千五，玩三天"\n"暑假带爸妈去成都玩四天，预算五千，喜欢美食和自然风光"\n"明天坐高铁去上海玩三天，预算三千，一个人去迪士尼"'}
+              placeholder={'试试这样说：\n"下周五去西安看兵马俑，两个人，预算两千五，玩三天"\n"暑假带爸妈去成都玩四天，预算五千，喜欢美食和自然风光"\n"明天坐高铁去上海玩三天，预算三千，一个人去迪士尼"'}
               rows={4}
               disabled={extracting}
               style={{ fontSize: 14 }}
@@ -312,13 +312,13 @@ const RequirementForm: React.FC = () => {
           <Form.Item>
             <Button
               type="primary"
-              icon={<RobotOutlined />}
+              icon={<CompassOutlined />}
               onClick={handleNaturalLanguageSubmit}
               loading={extracting}
               style={{ marginRight: '16px' }}
               size="large"
             >
-              {extracting ? 'AI 正在理解...' : '🤖 AI 智能提取'}
+              {extracting ? '正在理解...' : 'AI 智能提取'}
             </Button>
             <Button onClick={() => {
               form.resetFields();
@@ -336,9 +336,9 @@ const RequirementForm: React.FC = () => {
             </Button>
           </Form.Item>
 
-          <Divider>
+                    <Divider>
             <Space>
-              <span>📋</span>
+              <OrderedListOutlined style={{ color: 'var(--stamp-blue, #4a7a8c)' }} />
               <span>详细信息</span>
               <Text type="secondary" style={{ fontSize: 12 }}>（可手动修改AI提取的结果）</Text>
             </Space>
