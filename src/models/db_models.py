@@ -1,14 +1,29 @@
 """数据库模型定义"""
-from sqlalchemy import Column, String, Float, Integer, Text, JSON, DateTime, ForeignKey, Boolean, Numeric
+from sqlalchemy import Column, String, Float, Integer, Text, JSON, DateTime, ForeignKey, Boolean, Numeric, BigInteger
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timedelta
 from src.database import Base
+
+
+class AmapCache(Base):
+    """高德地图API响应缓存表"""
+    __tablename__ = "amap_cache"
+
+    cache_id = Column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    cache_key = Column(String(500), nullable=False, index=True, unique=True, comment="缓存键(API类型+参数哈希)")
+    api_type = Column(String(50), nullable=False, comment="API类型: direction/geocode/weather")
+    request_params = Column(JSON, comment="请求参数")
+    response_data = Column(JSON, comment="响应数据JSON")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
+    expires_at = Column(DateTime, nullable=False, comment="过期时间")
+
+    def __repr__(self):
+        return f"<AmapCache(cache_key='{self.cache_key}', api_type='{self.api_type}')>"
 
 
 class City(Base):
     """城市表"""
     __tablename__ = "cities"
-    
     city_id = Column(String(50), primary_key=True, comment="城市ID")
     city_name = Column(String(100), nullable=False, index=True, comment="城市名称")
     province = Column(String(100), comment="省份")

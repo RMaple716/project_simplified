@@ -1,11 +1,19 @@
 """
 高德地图导航API服务
+
+集成了数据库缓存 + 全局QPS限速器，避免QPS超限。
+调用方法（geocode / get_direction）流程：
+  1. 先查数据库缓存，命中直接返回
+  2. 缓存未命中 → 通过全局限速器获取令牌 → 请求高德API → 写入缓存
 """
 import httpx
 from typing import Dict, Any, Optional, List
 import os
 import asyncio
 from collections import defaultdict
+
+from src.services.amap_cache_service import get_cached_response, set_cached_response
+from src.services.rate_limiter import amap_rate_limiter
 
 
 class NavigationService:
@@ -28,7 +36,7 @@ class NavigationService:
 
     async def geocode(self, address: str) -> Optional[str]:
         """
-        将地址转换为经纬度坐标
+        将地址转换为经纬度坐标（优先使用缓存，通过全局限速器控制QPS）
 
         Args:
             address: 地址字符串
@@ -43,29 +51,49 @@ class NavigationService:
             logger.warning("[Navigation] 未配置API密钥")
             return None
 
+        cache_params = {"address": address}
+
+        # ========== 1. 先查缓存 ==========
+        cached = get_cached_response("geocode", cache_params)
+        if cached is not None:
+            if isinstance(cached, dict) and cached.get("status") == "1":
+                geocodes = cached.get("geocodes", [])
+                if geocodes:
+                    location = geocodes[0].get("location", "")
+                    if location:
+                        logger.info(f"[Navigation] 缓存命中 - 地址: {address} -> 坐标: {location}")
+                        return location
+            logger.info(f"[Navigation] 缓存命中但数据无效，忽略缓存")
+
         url = f"{self.base_url}/geocode/geo"
         params = {
             'key': self.api_key,
             'address': address
         }
-        # 如果配置了私钥，生成签名
         if self.private_key:
             params['sig'] = self._generate_sig(params)
+
         try:
             logger.info(f"[Navigation] 调用地理编码API - 地址: {address}")
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                response.raise_for_status()
-                data = response.json()
-                logger.info(f"[Navigation] 地理编码API返回: {data}")
 
-                if data.get('status') == '1' and data.get('geocodes'):
-                    location = data['geocodes'][0].get('location', '')
-                    logger.info(f"[Navigation] 获取到坐标: {location}")
-                    return location
-                logger.warning(f"[Navigation] 地理编码失败 - 状态: {data.get('status')}, 信息: {data.get('info', '未知错误')}")
-                return None
+            # ========== 2. 通过全局限速器控制QPS ==========
+            async with amap_rate_limiter:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, params=params, timeout=10.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    logger.info(f"[Navigation] 地理编码API返回: {data}")
+
+            # ========== 3. 写入缓存 ==========
+            if data.get('status') == '1':
+                set_cached_response("geocode", cache_params, data)
+
+            if data.get('status') == '1' and data.get('geocodes'):
+                location = data['geocodes'][0].get('location', '')
+                logger.info(f"[Navigation] 获取到坐标: {location}")
+                return location
+            logger.warning(f"[Navigation] 地理编码失败 - 状态: {data.get('status')}, 信息: {data.get('info', '未知错误')}")
+            return None
         except Exception as e:
             logger.error(f"[Navigation] 地理编码异常: {str(e)}")
             return None
@@ -77,7 +105,7 @@ class NavigationService:
         mode: str = 'driving'
     ) -> Dict[str, Any]:
         """
-        获取导航路线
+        获取导航路线（优先使用缓存，通过全局限速器控制QPS）
 
         Args:
             origin: 起点地址或坐标
@@ -103,7 +131,22 @@ class NavigationService:
 
         logger.info(f"[Navigation] 调用导航API - 起点: {origin}, 终点: {destination}, 模式: {mode}")
 
-        # 频率控制
+        cache_params = {"origin": origin, "destination": destination, "mode": mode}
+
+        # ========== 1. 先查缓存 ==========
+        cached = get_cached_response("direction", cache_params)
+        if cached is not None:
+            if isinstance(cached, dict) and cached.get("status") == "1":
+                logger.info(f"[Navigation] 缓存命中路线数据")
+                route_data = self._parse_route_data(cached, mode)
+                return {
+                    'status': 'success',
+                    'data': route_data
+                }
+            logger.info(f"[Navigation] 缓存命中但数据无效，忽略缓存")
+
+        # ========== 2. 缓存未命中 → 请求API ==========
+        # 按相同key的频率控制（保留原有限速作为补充）
         query_key = f"{origin}_{destination}_{mode}"
         async with self.query_lock[query_key]:
             current_time = asyncio.get_event_loop().time()
@@ -136,23 +179,26 @@ class NavigationService:
             'origin': origin,
             'destination': destination
         }
-        # 如果配置了私钥，生成签名
         if self.private_key:
             params['sig'] = self._generate_sig(params)
+
         try:
             logger.info(f"[Navigation] 请求URL: {url}")
             logger.info(f"[Navigation] 请求参数: {params}")
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                response.raise_for_status()
-                data = response.json()
-                logger.info(f"[Navigation] 导航API返回: {data}")
 
+            # ====== 通过全局限速器获取令牌后再请求 ======
+            async with amap_rate_limiter:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, params=params, timeout=10.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    logger.info(f"[Navigation] 导航API返回: {data}")
 
-                # ====== QPS超限自动重试（最多2次，每次等待2秒）======
-                if data.get('infocode') == '10021':  # CUQPS_HAS_EXCEEDED_THE_LIMIT
-                    logger.warning(f"[Navigation] QPS超限，等待2秒后重试...")
-                    await asyncio.sleep(2.0)
+            # ====== QPS超限自动重试（通过限速器重试）======
+            if data.get('infocode') == '10021':  # CUQPS_HAS_EXCEEDED_THE_LIMIT
+                logger.warning(f"[Navigation] QPS超限，通过限速器等待后重试...")
+                await asyncio.sleep(2.0)
+                async with amap_rate_limiter:
                     async with httpx.AsyncClient() as client2:
                         response2 = await client2.get(url, params=params, timeout=10.0)
                         response2.raise_for_status()
@@ -161,25 +207,30 @@ class NavigationService:
                         if data.get('infocode') == '10021':
                             logger.warning(f"[Navigation] QPS再次超限，等待3秒后最后一次重试...")
                             await asyncio.sleep(3.0)
-                            async with httpx.AsyncClient() as client3:
-                                response3 = await client3.get(url, params=params, timeout=10.0)
-                                response3.raise_for_status()
-                                data = response3.json()
-                                logger.info(f"[Navigation] 第二次重试后API返回: {data}")
+                            async with amap_rate_limiter:
+                                async with httpx.AsyncClient() as client3:
+                                    response3 = await client3.get(url, params=params, timeout=10.0)
+                                    response3.raise_for_status()
+                                    data = response3.json()
+                                    logger.info(f"[Navigation] 第二次重试后API返回: {data}")
 
-                if data.get('status') == '1':
-                    route_data = self._parse_route_data(data, mode)
-                    logger.info(f"[Navigation] 解析后的路线数据: {route_data}")
-                    return {
-                        'status': 'success',
-                        'data': route_data
-                    }
-                else:
-                    logger.warning(f"[Navigation] 导航API返回错误 - 状态: {data.get('status')}, 信息: {data.get('info', '获取导航信息失败')}")
-                    return {
-                        'status': 'error',
-                        'message': data.get('info', '获取导航信息失败')
-                    }
+            # ========== 3. 写入缓存 ==========
+            if data.get('status') == '1':
+                set_cached_response("direction", cache_params, data)
+
+            if data.get('status') == '1':
+                route_data = self._parse_route_data(data, mode)
+                logger.info(f"[Navigation] 解析后的路线数据: {route_data}")
+                return {
+                    'status': 'success',
+                    'data': route_data
+                }
+            else:
+                logger.warning(f"[Navigation] 导航API返回错误 - 状态: {data.get('status')}, 信息: {data.get('info', '获取导航信息失败')}")
+                return {
+                    'status': 'error',
+                    'message': data.get('info', '获取导航信息失败')
+                }
 
         except httpx.TimeoutException:
             return {
@@ -394,3 +445,5 @@ class NavigationService:
     
 # 创建全局实例
 navigation_service = NavigationService()
+
+

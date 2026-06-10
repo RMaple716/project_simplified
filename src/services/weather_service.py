@@ -1,12 +1,24 @@
 """
 高德地图天气API服务
+
+集成了数据库缓存 + 全局QPS限速器，避免QPS超限。
+调用流程：
+  1. 先查数据库缓存，命中直接返回
+  2. 缓存未命中 → 通过全局限速器获取令牌 → 请求高德API → 写入缓存
 """
+import logging
 import httpx
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 import os
 import asyncio
 from collections import defaultdict
+
+from src.services.amap_cache_service import get_cached_response, set_cached_response
+from src.services.rate_limiter import amap_rate_limiter
+
+logger = logging.getLogger(__name__)
+
 
 class WeatherService:
     """高德地图天气API服务类"""
@@ -27,7 +39,7 @@ class WeatherService:
 
     async def get_weather(self, city: str, extensions: str = 'base') -> Dict[str, Any]:
         """
-        获取天气信息
+        获取天气信息（优先使用缓存，通过全局限速器控制QPS）
 
         Args:
             city: 城市名称或adcode
@@ -44,7 +56,20 @@ class WeatherService:
                 'message': '未配置高德地图API密钥'
             }
 
-        # 频率控制:检查距离上次查询的时间
+        cache_params = {"city": city, "extensions": extensions}
+
+        # ========== 1. 先查缓存 ==========
+        cached = get_cached_response("weather", cache_params)
+        if cached is not None:
+            if isinstance(cached, dict) and cached.get("status") == "1":
+                logger.info(f"[Weather] 缓存命中 - city={city}, extensions={extensions}")
+                return {
+                    'status': 'success',
+                    'data': cached.get('lives', []) if extensions == 'base' else cached.get('forecasts', [])
+                }
+
+        # ========== 2. 缓存未命中 → 请求API ==========
+        # 按相同key的频率控制（保留原有限速作为补充）
         query_key = f"{city}_{extensions}"
         async with self.query_lock[query_key]:
             current_time = asyncio.get_event_loop().time()
@@ -65,21 +90,27 @@ class WeatherService:
         }
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                response.raise_for_status()
-                data = response.json()
+            # ====== 通过全局限速器获取令牌后再请求 ======
+            async with amap_rate_limiter:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, params=params, timeout=10.0)
+                    response.raise_for_status()
+                    data = response.json()
 
-                if data.get('status') == '1':
-                    return {
-                        'status': 'success',
-                        'data': data.get('lives', []) if extensions == 'base' else data.get('forecasts', [])
-                    }
-                else:
-                    return {
-                        'status': 'error',
-                        'message': data.get('info', '获取天气信息失败')
-                    }
+            # ========== 3. 写入缓存 ==========
+            if data.get('status') == '1':
+                set_cached_response("weather", cache_params, data)
+
+            if data.get('status') == '1':
+                return {
+                    'status': 'success',
+                    'data': data.get('lives', []) if extensions == 'base' else data.get('forecasts', [])
+                }
+            else:
+                return {
+                    'status': 'error',
+                    'message': data.get('info', '获取天气信息失败')
+                }
 
         except httpx.TimeoutException:
             return {

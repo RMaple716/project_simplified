@@ -1,15 +1,12 @@
 """
-导航路线查询路由 - 直接调用高德地图导航API，返回路线数据
+导航路线查询路由 - 通过全局导航服务实例查询，避免创建独立实例导致限速失效
 """
 from typing import Dict, Any, Optional
 from fastapi import APIRouter
 from src.models.response import success_response, error_response
-from src.services.navigation_service import NavigationService
+from src.services.navigation_service import navigation_service
 
 router = APIRouter(prefix="/api/v1/navigation", tags=["导航路线"])
-
-# 创建导航服务实例
-navigation_service = NavigationService()
 
 
 @router.post("/direction")

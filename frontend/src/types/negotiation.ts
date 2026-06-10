@@ -96,8 +96,8 @@ export const PHASE_PROGRESS_RANGE: Record<NegotiationPhase, [number, number]> = 
   CFP: [0, 20],
   BIDDING: [20, 40],
   NEGOTIATE: [40, 80],
-  FINALIZING: [80, 95],
-  FINALIZED: [95, 100],
+  FINALIZING: [80, 98],
+  FINALIZED: [100, 100],
 };
 
 /** 单次调整详情（字段级变化） */
@@ -113,3 +113,4 @@ export interface AdjustmentDetail {
   /** 采用的策略名称，如"时间平移"、"时段交换" */
   strategy: string;
 }
+

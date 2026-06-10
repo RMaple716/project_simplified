@@ -595,6 +595,50 @@ def check_itinerary_conflicts(day_plans: List[Dict[str, Any]], structured_requir
                 conflict["date"] = date
                 all_conflicts.append(conflict)
     
+    # ===== 地理位置冲突检测：同一天内相邻景点距离过远 =====
+    for day_idx, day_plan in enumerate(day_plans):
+        day_num = day_idx + 1
+        attractions = day_plan.get("attractions", [])
+        if len(attractions) < 2:
+            continue
+
+        for i in range(len(attractions) - 1):
+            a = attractions[i]
+            b = attractions[i + 1]
+            loc_a = a.get("location") if isinstance(a.get("location"), dict) else {}
+            loc_b = b.get("location") if isinstance(b.get("location"), dict) else {}
+            lat1, lng1 = loc_a.get("lat"), loc_a.get("lng")
+            lat2, lng2 = loc_b.get("lat"), loc_b.get("lng")
+
+            if None not in (lat1, lng1, lat2, lng2):
+                import math
+                R = 6371
+                dlat = math.radians(float(lat2) - float(lat1))
+                dlng = math.radians(float(lng2) - float(lng1))
+                a_ = math.sin(dlat/2)**2 + math.cos(math.radians(float(lat1))) * math.cos(math.radians(float(lat2))) * math.sin(dlng/2)**2
+                c_ = 2 * math.atan2(math.sqrt(a_), math.sqrt(1-a_))
+                dist_km = R * c_
+
+                if dist_km > 30:
+                    all_conflicts.append({
+                        "type": "geo_distance",
+                        "description": f"第{day_num}天「{a.get('name','')}」到「{b.get('name','')}」直线距离约{dist_km:.0f}公里，超过30公里，交通耗时过长",
+                        "severity": "error",
+                        "day": day_num,
+                        "activities": [a.get("name",""), b.get("name","")],
+                        "distance_km": round(dist_km, 1)
+                    })
+                    suggestions.append(f"第{day_num}天「{a.get('name','')}」和「{b.get('name','')}」相距过远，建议分开到不同天游览或替换其中一景点")
+                elif dist_km > 15:
+                    all_conflicts.append({
+                        "type": "geo_distance_warning",
+                        "description": f"第{day_num}天「{a.get('name','')}」到「{b.get('name','')}」直线距离约{dist_km:.0f}公里，建议确认交通方案",
+                        "severity": "warning",
+                        "day": day_num,
+                        "activities": [a.get("name",""), b.get("name","")],
+                        "distance_km": round(dist_km, 1)
+                    })
+
     # 检查总预算
     budget_limit = structured_requirement.get("total_budget", 0)
     if budget_limit > 0 and total_cost > budget_limit:

@@ -1,10 +1,12 @@
+
 """
 景点推荐智能体
 """
-from typing import Dict, Any, List
-from .base_agent import BaseAgent
-from src.services.weather_service import WeatherService
 from typing import Dict, Any, List, Optional
+from .base_agent import BaseAgent
+from src.services.weather_service import weather_service
+
+
 class AttractionsAgent(BaseAgent):
     """景点推荐智能体"""
 
@@ -14,7 +16,7 @@ class AttractionsAgent(BaseAgent):
             name="景点推荐助手",
             description="基于用户偏好推荐合适的旅游景点"
         )
-        self.weather_service = WeatherService()
+        self.weather_service = weather_service
 
     def get_capabilities(self) -> List[str]:
         return [
@@ -64,9 +66,9 @@ class AttractionsAgent(BaseAgent):
             except Exception as e:
                 print(f"获取天气信息失败: {str(e)}")
 
-        # 如果没有配置API密钥，返回模拟数据
+                # 如果没有配置API密钥，返回模拟数据
         if not os.getenv("DEEPSEEK_API_KEY"):
-            return self._get_mock_data(task_id, city_name, travel_days, start_time, weather_info)
+              return self._get_mock_data(task_id, city_name, travel_days, start_time, weather_info, preferences)
 
         # 构建系统提示词
         system_prompt = """你是一个专业的景点推荐助手。请根据用户需求和天气情况推荐合适的旅游景点。
@@ -78,6 +80,10 @@ class AttractionsAgent(BaseAgent):
 4. 包含实用信息（位置、最佳游览时间等）
 5. 如果天气不佳（如雨天），优先推荐室内景点
 6. 如果天气良好，可以适当增加户外景点
+7. 【关键】同一城市内，推荐的景点应集中在城市核心区或同一地理片区，景点之间的直线距离不宜超过15公里。优先推荐地铁/公交可达且相邻景点间交通耗时不超过60分钟的景点组合。避免同时推荐位于城市两端或相距极远的景点（如北京同时推荐八达岭长城和故宫）。
+8. 长途旅行（多天）时，可将较远的景点（如郊区、周边县市）安排在单独的某一天集中游览，不要与市中心景点混在一天。
+9. **【重要】必须包含该城市最具代表性的核心景点（如衡阳必须包含南岳衡山）**，不能遗漏用户所在城市的标志性景点。核心景点优先安排。
+10. **【关键】如果用户的「偏好」列表中包含具体的景点名称（如"衡山""故宫""黄山"等），则该景点为必去景点，必须包含在推荐结果中。** 请先解析偏好列表，识别其中的具体景点名称，确保这些景点被优先列入行程。
 
 返回格式：
 {
@@ -155,7 +161,7 @@ class AttractionsAgent(BaseAgent):
                     task_data, weather_info, system_prompt, user_prompt
                 )
             else:
-                response_content = await self.call_llm(messages, max_tokens=4000)
+                response_content = await self.call_llm(messages, max_tokens=8192)
                 result = self._parse_json_response(response_content)
 
             processing_time = (time.time() - start_time) * 1000
@@ -189,7 +195,7 @@ class AttractionsAgent(BaseAgent):
                 "error_message": str(e)
             }
 
-    def _get_mock_data(self, task_id: str, city_name: str, travel_days: int, start_time: float, weather_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _get_mock_data(self, task_id: str, city_name: str, travel_days: int, start_time: float, weather_info: Optional[Dict[str, Any]] = None, preferences: Optional[List[str]] = None) -> Dict[str, Any]:
         """生成模拟景点数据"""
         import time
         
@@ -245,9 +251,27 @@ class AttractionsAgent(BaseAgent):
             {"attraction_id": "att_003", "name": f"{city_name}古街", "city_name": city_name, "address": f"{city_name}老城区", "location": {"lat": 30.1, "lng": 120.0}, "description": f"体验{city_name}传统文化", "recommended_duration": "2小时", "visit_time_slot": "afternoon", "ticket_price": 0, "rating": 4.5, "opening_hours": "全天", "tags": ["文化", "历史"]},
         ])
 
-        # 根据天数选择景点数量
-        num_attractions = min(len(attractions), travel_days * 3)
+                # 根据天数选择景点数量（至少返回 4 个，确保覆盖足够多的景点）
+        num_attractions = min(len(attractions), max(travel_days * 3, 4))
         selected_attractions = attractions[:num_attractions]
+
+        # 检查用户偏好中的景点名是否在列表中，如果不在则追加
+        if preferences:
+            for pref in preferences:
+                if not pref:
+                    continue
+                # 查找偏好中提到的景点名是否在 selected_attractions 中
+                pref_lower = pref.lower()
+                found = any(pref_lower in a.get('name', '').lower() for a in selected_attractions)
+                if not found:
+                    # 在完整列表中查找匹配的景点
+                    for a in attractions:
+                        a_name = a.get('name', '').lower()
+                        a_tags = [t.lower() for t in a.get('tags', [])]
+                        if pref_lower in a_name or pref_lower in a_tags:
+                            if a not in selected_attractions:
+                                selected_attractions.append(a)
+                                break
 
         processing_time = (time.time() - start_time) * 1000
 

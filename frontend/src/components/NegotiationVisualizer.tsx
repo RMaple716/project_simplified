@@ -37,6 +37,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import type { RootState, AppDispatch } from '../store';
 import {
   setEvents,
+  resetNegotiation,
   startReplay,
   stopReplay,
   nextReplayEvent,
@@ -76,7 +77,17 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
   // 初始化：将 propEvents 同步到 Redux（轮询时只追加新事件）
   useEffect(() => {
     if (propEvents && propEvents.length > 0) {
-      if (negotiationState.events.length === 0) {
+      // 检测是否为全新的协商会话：通过判断事件 sessionId 是否改变
+      const isNewSession =
+        negotiationState.events.length > 0 &&
+        propEvents[0]?.sessionId &&
+        propEvents[0].sessionId !== negotiationState.events[0]?.sessionId;
+
+      if (isNewSession) {
+        // 全新会话：先重置再设置新数据
+        dispatch(resetNegotiation());
+        setTimeout(() => dispatch(setEvents(propEvents)), 0);
+      } else if (negotiationState.events.length === 0) {
         // 首次加载：全部设置
         dispatch(setEvents(propEvents));
       } else if (propEvents.length > negotiationState.events.length) {

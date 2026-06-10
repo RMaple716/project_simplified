@@ -13,27 +13,60 @@ router = APIRouter(prefix="/api/v1/integration", tags=["行程整合"])
 
 def calculate_route_optimization(attractions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    基础路线优化算法：根据景点位置排序，避免折返
+    路线优化算法：使用最近邻贪心算法，从第一个景点出发依次寻找最近的未访问景点
     
     Args:
         attractions: 景点列表，每个景点包含 location {lat, lng}
     
     Returns:
-        优化后的景点列表（按地理位置就近排序）
+        优化后的景点列表（按最近邻顺序排列）
     """
+    import math
+
     if not attractions or len(attractions) <= 1:
-        return attractions
-    
-    # 过滤掉非字典类型的元素
-    valid_attractions = [a for a in attractions if isinstance(a, dict)]
-    
-    # 简化版：按纬度排序（实际应使用更复杂的路径规划算法）
-    sorted_attractions = sorted(
-        valid_attractions, 
-        key=lambda x: x.get("location", {}).get("lat", 0) if isinstance(x.get("location"), dict) else 0
-    )
-    
-    return sorted_attractions
+        return [a for a in attractions if isinstance(a, dict)]
+
+    valid = [a for a in attractions if isinstance(a, dict)]
+
+    def _haversine_km(a, b):
+        """计算两个景点之间的大圆距离（km）"""
+        loc_a = a.get("location") if isinstance(a.get("location"), dict) else {}
+        loc_b = b.get("location") if isinstance(b.get("location"), dict) else {}
+        lat1, lng1 = loc_a.get("lat"), loc_a.get("lng")
+        lat2, lng2 = loc_b.get("lat"), loc_b.get("lng")
+        if None in (lat1, lng1, lat2, lng2):
+            return float("inf")
+        R = 6371
+        dlat = math.radians(float(lat2) - float(lat1))
+        dlng = math.radians(float(lng2) - float(lng1))
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(float(lat1))) * math.cos(math.radians(float(lat2))) * math.sin(dlng/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        return R * c
+
+    # 寻找中心锚点（取所有景点经纬度中位数作为起点）
+    lats = []
+    lngs = []
+    for v in valid:
+        loc = v.get("location") if isinstance(v.get("location"), dict) else {}
+        if loc.get("lat") is not None and loc.get("lng") is not None:
+            lats.append(float(loc["lat"]))
+            lngs.append(float(loc["lng"]))
+    if lats:
+        center_lat = sorted(lats)[len(lats)//2]
+        center_lng = sorted(lngs)[len(lngs)//2]
+        center = {"lat": center_lat, "lng": center_lng}
+        # 选距离中心最近的景点作为起点
+        valid.sort(key=lambda x: _haversine_km(x, {"location": center}) if isinstance(x.get("location"), dict) else float("inf"))
+
+    # 最近邻贪心算法
+    unvisited = valid[:]
+    result = [unvisited.pop(0)]
+    while unvisited:
+        last = result[-1]
+        nearest_idx = min(range(len(unvisited)), key=lambda i: _haversine_km(last, unvisited[i]))
+        result.append(unvisited.pop(nearest_idx))
+
+    return result
 
 
 def estimate_transport_time(from_loc: Dict, to_loc: Dict) -> int:
@@ -279,6 +312,32 @@ def integrate_agent_results_to_daily_plans(
                 attraction["visit_duration"] = "1.5小时"
                 day_attractions.append(attraction)
                 attraction_indices["evening"] += 1
+        
+        # ===== 对当天景点按地理位置做就近排序 =====
+        # 确保同一天内相邻景点的距离尽可能小，避免市区—郊区穿插
+        if len(day_attractions) >= 2:
+            import math
+            def _dist_km(a, b):
+                la = a.get("location") if isinstance(a.get("location"), dict) else {}
+                lb = b.get("location") if isinstance(b.get("location"), dict) else {}
+                lat1, lng1 = la.get("lat"), la.get("lng")
+                lat2, lng2 = lb.get("lat"), lb.get("lng")
+                if None in (lat1, lng1, lat2, lng2):
+                    return float("inf")
+                R = 6371
+                dlat = math.radians(float(lat2) - float(lat1))
+                dlng = math.radians(float(lng2) - float(lng1))
+                a_ = math.sin(dlat/2)**2 + math.cos(math.radians(float(lat1))) * math.cos(math.radians(float(lat2))) * math.sin(dlng/2)**2
+                c_ = 2 * math.atan2(math.sqrt(a_), math.sqrt(1-a_))
+                return R * c_
+            # 贪心最近邻重排（保持第一个景点不动，后续依次取最近的）
+            reordered = [day_attractions[0]]
+            remaining = day_attractions[1:]
+            while remaining:
+                last = reordered[-1]
+                nearest_idx = min(range(len(remaining)), key=lambda i: _dist_km(last, remaining[i]))
+                reordered.append(remaining.pop(nearest_idx))
+            day_attractions = reordered
         
         # 安排餐饮（早中晚三餐，时间与景点错开）
         day_meals = []

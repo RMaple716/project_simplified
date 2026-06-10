@@ -47,13 +47,19 @@ const negotiationSlice = createSlice({
       // 更新进度状态
       const phase = event.phase;
       state.progress.currentPhase = phase;
-      const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
-      // 根据事件在阶段内的序号估算百分比
-      const phaseEvents = state.events.filter(e => e.phase === phase);
-      const idx = phaseEvents.length;
-      const totalEstimate = Math.max(phaseEvents.length + 2, 5);
-      const phasePercent = minP + (maxP - minP) * Math.min(idx / totalEstimate, 1);
-      state.progress.overallPercent = Math.round(phasePercent);
+
+      // 如果是 FINALIZED 阶段，直接设为 100%
+      if (phase === 'FINALIZED') {
+        state.progress.overallPercent = 100;
+      } else {
+        const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
+        // 根据事件在阶段内的序号估算百分比
+        const phaseEvents = state.events.filter(e => e.phase === phase);
+        const idx = phaseEvents.length;
+        const totalEstimate = Math.max(phaseEvents.length + 2, 5);
+        const phasePercent = minP + (maxP - minP) * Math.min(idx / totalEstimate, 1);
+        state.progress.overallPercent = Math.round(phasePercent);
+      }
 
       // 更新活跃参与方
       const agents = new Set<string>();
@@ -78,12 +84,17 @@ const negotiationSlice = createSlice({
         const phase = last.phase || last.eventType as NegotiationPhase;
         state.progress.currentPhase = phase;
 
-        // 根据阶段计算进度百分比范围
-        const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
-        const phaseEvents = action.payload.filter(e => (e.phase || e.eventType) === phase);
-        const phaseIndex = phaseEvents.length;
-        const phasePercent = minP + (maxP - minP) * Math.min(phaseIndex / Math.max(phaseEvents.length, 5), 1);
-        state.progress.overallPercent = Math.min(Math.round(phasePercent), 100);
+        // 如果是 FINALIZED 阶段，直接设为 100%
+        if (phase === 'FINALIZED') {
+          state.progress.overallPercent = 100;
+        } else {
+          // 根据阶段计算进度百分比范围
+          const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
+          const phaseEvents = action.payload.filter(e => (e.phase || e.eventType) === phase);
+          const phaseIndex = phaseEvents.length;
+          const phasePercent = minP + (maxP - minP) * Math.min(phaseIndex / Math.max(phaseEvents.length, 5), 1);
+          state.progress.overallPercent = Math.min(Math.round(phasePercent), 100);
+        }
 
         // 用最后一个事件生成摘要
         state.progress.latestSummary = generateSummary(last);
