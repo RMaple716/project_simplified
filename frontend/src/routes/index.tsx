@@ -5,6 +5,7 @@ import ItineraryDetail from '../pages/ItineraryDetail';
 import TaskStatus from '../pages/TaskStatus';
 import Login from '../pages/Login';
 import Profile from '../pages/Profile';
+import ForgotPassword from '../pages/ForgotPassword';
 export const routes = [
   {
     path: '/',
@@ -31,7 +32,16 @@ export const routes = [
     element: <Login />,
   },
   {
+    path: '/forgot-password',
+    element: <ForgotPassword />,
+  },
+  {
+    path: '/reset-password',
+    element: <ForgotPassword />,
+  },
+  {
     path: '/profile',
     element: <Profile />,
   },
 ];
+

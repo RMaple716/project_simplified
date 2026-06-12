@@ -162,14 +162,33 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
     
+            
     # 关系
     itineraries = relationship("Itinerary", back_populates="user")
     requirements = relationship("UserRequirement", back_populates="user")
-    
+    reset_tokens = relationship("PasswordResetToken", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(user_id='{self.user_id}', username='{self.username}')>"
 
 
+
+class PasswordResetToken(Base):
+    """密码重置令牌表"""
+    __tablename__ = "password_reset_tokens"
+
+    token_id = Column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    user_id = Column(String(50), ForeignKey("users.user_id"), nullable=False, index=True, comment="用户ID")
+    token_hash = Column(String(200), nullable=False, comment="重置令牌的SHA-256哈希")
+    expires_at = Column(DateTime, nullable=False, comment="过期时间")
+    is_used = Column(Boolean, default=False, comment="是否已使用")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
+
+    # 关系
+    user = relationship("User", back_populates="reset_tokens")
+
+    def __repr__(self):
+        return f"<PasswordResetToken(token_id='{self.token_id}', user_id='{self.user_id}', used='{self.is_used}')>"
 
 
 # ============== 业务数据表 ==============

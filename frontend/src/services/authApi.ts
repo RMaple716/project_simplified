@@ -24,6 +24,18 @@ export interface UserInfoResponse {
   };
 }
 
+export interface ForgotPasswordResponse {
+  code: number;
+  msg: string;
+  data: null;
+}
+
+export interface ResetPasswordResponse {
+  code: number;
+  msg: string;
+  data: null;
+}
+
 export const authApi = {
   /** 用户登录 */
   login: async (username: string, password: string): Promise<LoginResponse> => {
@@ -38,5 +50,15 @@ export const authApi = {
   /** 获取当前用户信息 */
   getCurrentUser: async (): Promise<UserInfoResponse> => {
     return apiClient.get('/auth/me');
+  },
+
+  /** 请求密码重置（发送验证码邮件） */
+  forgotPassword: async (email: string): Promise<ForgotPasswordResponse> => {
+    return apiClient.post('/auth/forgot-password', { email });
+  },
+
+  /** 使用验证码重置密码 */
+  resetPassword: async (email: string, code: string, newPassword: string): Promise<ResetPasswordResponse> => {
+    return apiClient.post('/auth/reset-password', { email, code, new_password: newPassword });
   },
 };

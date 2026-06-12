@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Form, Input, Button, Typography, message, Tabs } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { authApi } from '../services/authApi';
 import { loginSuccess } from '../store/slices/authSlice';
@@ -106,9 +106,14 @@ const Login: React.FC = () => {
                   <Form.Item name="username" rules={[{ required: true, message: '请输入用户名或邮箱' }]}>
                     <Input placeholder="用户名或邮箱" />
                   </Form.Item>
-                  <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+                                    <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
                     <Input.Password placeholder="密码" />
                   </Form.Item>
+                  <div style={{ textAlign: 'right', marginTop: -16, marginBottom: 8 }}>
+                    <Link to="/forgot-password" style={{ color: '#8a7a70', fontSize: 12 }}>
+                      忘记密码？
+                    </Link>
+                  </div>
                   <Form.Item style={{ marginBottom: 0 }}>
                     <Button type="primary" htmlType="submit" block loading={loading}>
                       登录
