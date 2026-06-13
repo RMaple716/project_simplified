@@ -37,14 +37,14 @@ export interface NegotiationProgressBarProps {
   legacy?: boolean;
 }
 
-/** 阶段对应的颜色 */
+/** 阶段对应的颜色（使用手工感主题色板，与 travel-theme.css 一致） */
 const PHASE_COLORS: Record<NegotiationPhase, string> = {
-  INIT: '#d9d9d9',
-  CFP: '#1890ff',
-  BIDDING: '#722ed1',
-  NEGOTIATE: '#fa8c16',
-  FINALIZING: '#52c41a',
-  FINALIZED: '#13c2c2',
+  INIT: 'var(--ink-light, #8a7a70)',
+  CFP: 'var(--stamp-blue, #4a7a8c)',
+  BIDDING: 'var(--stamp-blue, #4a7a8c)',
+  NEGOTIATE: 'var(--stamp-red, #c45a4a)',
+  FINALIZING: 'var(--stamp-green, #6a8f6a)',
+  FINALIZED: 'var(--stamp-green, #6a8f6a)',
 };
 
 /** 阶段对应的图标 */
@@ -80,8 +80,8 @@ const NegotiationProgressBar: React.FC<NegotiationProgressBarProps> = ({
           percent={percent}
           status={status}
           strokeColor={{
-            '0%': '#108ee9',
-            '100%': '#87d068',
+            '0%': 'var(--stamp-blue, #4a7a8c)',
+            '100%': 'var(--stamp-green, #6a8f6a)',
           }}
         />
         {summary && (
@@ -97,12 +97,12 @@ const NegotiationProgressBar: React.FC<NegotiationProgressBarProps> = ({
     <div style={{ margin: '16px 0' }}>
       {/* 进度条 */}
       <Progress
-        percent={percent}
-        status={status}
-        strokeColor={{
-          '0%': '#108ee9',
-          '100%': '#87d068',
-        }}
+      percent={percent}
+      status={status}
+      strokeColor={{
+        '0%': 'var(--stamp-blue, #4a7a8c)',
+        '100%': 'var(--stamp-green, #6a8f6a)',
+      }}
       />
 
       {/* 阶段状态文字 */}

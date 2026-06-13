@@ -21,7 +21,7 @@
  * 传统降级：当 events 为空时，显示旧版纯进度条
  */
 import React, { useEffect, useMemo, useCallback, useState, useRef } from 'react';
-import { Card, Collapse, Space, Typography, Empty, Button, Slider, Switch, Tag } from 'antd';
+import { Card, Collapse, Space, Typography, Empty, Button, Slider, Switch, Tag, Select, Tooltip, Popover } from 'antd';
 import {
   PlayCircleOutlined,
   PauseCircleOutlined,
@@ -32,6 +32,10 @@ import {
   EyeOutlined,
   EyeInvisibleOutlined,
   SwapOutlined,
+  RiseOutlined,
+  FallOutlined,
+  MinusOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons';
 import { useDispatch, useSelector } from 'react-redux';
 import type { RootState, AppDispatch } from '../store';
@@ -48,7 +52,8 @@ import NegotiationProgressBar from './NegotiationProgressBar';
 import ScrollableRouteTimeline from './ScrollableRouteTimeline';
 import UtilityTrajectoryChart from './UtilityTrajectoryChart';
 import NegotiationMapOverlay from './NegotiationMapOverlay';
-import type { NegotiationEvent } from '../types/negotiation';
+import type { NegotiationEvent, NegotiationEventType } from '../types/negotiation';
+import { EVENT_TYPE_CN } from '../types/negotiation';
 import NegotiationAdjustmentSummary from './NegotiationAdjustmentSummary';
 
 const { Panel } = Collapse;
@@ -63,6 +68,13 @@ interface NegotiationVisualizerProps {
   showFullPanel?: boolean;
 }
 
+/** 事件类型选项（用于筛选器） */
+const EVENT_TYPES_LIST: NegotiationEventType[] = ['CFP', 'PROPOSE', 'COUNTER', 'ACCEPT', 'REJECT', 'ROLLBACK', 'FINALIZED', 'AGENT_MSG'];
+const EVENT_TYPE_OPTIONS = EVENT_TYPES_LIST.map(type => ({
+  value: type,
+  label: `${EVENT_TYPE_CN[type] || type} (${type})`,
+}));
+
 const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
   events: propEvents,
   map,
@@ -72,29 +84,43 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
   const negotiationState = useSelector((state: RootState) => state.negotiation);
 
   const [overlayVisible, setOverlayVisible] = useState(true);
+  const [filterEventTypes, setFilterEventTypes] = useState<NegotiationEventType[]>([]);
   const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 追踪当前已处理的 sessionId，避免竞态
+  const currentSessionRef = useRef<string | null>(null);
+  // 追踪事件长度的基准，用于增量更新判断
+  const prevEventLengthRef = useRef<number>(0);
 
-  // 初始化：将 propEvents 同步到 Redux（轮询时只追加新事件）
+  // 初始化：将 propEvents 同步到 Redux（无竞态）
   useEffect(() => {
-    if (propEvents && propEvents.length > 0) {
-      // 检测是否为全新的协商会话：通过判断事件 sessionId 是否改变
-      const isNewSession =
-        negotiationState.events.length > 0 &&
-        propEvents[0]?.sessionId &&
-        propEvents[0].sessionId !== negotiationState.events[0]?.sessionId;
+    if (!propEvents || propEvents.length === 0) return;
 
-      if (isNewSession) {
-        // 全新会话：先重置再设置新数据
-        dispatch(resetNegotiation());
-        setTimeout(() => dispatch(setEvents(propEvents)), 0);
-      } else if (negotiationState.events.length === 0) {
-        // 首次加载：全部设置
-        dispatch(setEvents(propEvents));
-      } else if (propEvents.length > negotiationState.events.length) {
-        // 轮询更新：只 dispatch 新的事件（用最后一个事件的阶段推断进度）
-        // 利用 setEvents 基于最后一个事件计算 correct 进度
-        dispatch(setEvents(propEvents));
-      }
+    const newSessionId = propEvents[0]?.sessionId;
+    const currentSessionId = currentSessionRef.current;
+    const prevLength = prevEventLengthRef.current;
+
+    // 检测是否为全新的协商会话
+    const isNewSession =
+      newSessionId &&
+      currentSessionId &&
+      newSessionId !== currentSessionId;
+
+    if (isNewSession) {
+      // 全新会话：先记录 sessionId，再使用原子操作重置并设置
+      currentSessionRef.current = newSessionId;
+      prevEventLengthRef.current = propEvents.length;
+      dispatch(resetNegotiation());
+      // 使用 queueMicrotask 替代 setTimeout(0)，更可靠
+      queueMicrotask(() => dispatch(setEvents(propEvents)));
+    } else if (prevLength === 0) {
+      // 首次加载
+      currentSessionRef.current = newSessionId || null;
+      prevEventLengthRef.current = propEvents.length;
+      dispatch(setEvents(propEvents));
+    } else if (propEvents.length > prevLength) {
+      // 轮询更新：有新的数据追加
+      prevEventLengthRef.current = propEvents.length;
+      dispatch(setEvents(propEvents));
     }
   }, [propEvents, dispatch]);
 
@@ -129,6 +155,24 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
 
   // 传统模式（无事件时降级）
   const isLegacy = negotiationState.events.length === 0;
+
+  // 按事件类型筛选（P1 新增）
+  const filteredEvents = useMemo(() => {
+    if (filterEventTypes.length === 0) return negotiationState.events;
+    return negotiationState.events.filter(e => filterEventTypes.includes(e.eventType));
+  }, [negotiationState.events, filterEventTypes]);
+
+  // 筛选后在原始 events 中的索引
+  const replayIndexInFilter = useMemo(() => {
+    if (negotiationState.replayIndex < 0 || filterEventTypes.length === 0) {
+      return negotiationState.replayIndex;
+    }
+    // 计算在筛选后列表中的位置
+    const targetEvent = negotiationState.events[negotiationState.replayIndex];
+    if (!targetEvent) return -1;
+    const idx = filteredEvents.findIndex(e => e.eventId === targetEvent.eventId);
+    return idx;
+  }, [negotiationState.replayIndex, filterEventTypes, filteredEvents, negotiationState.events]);
 
   // 回放控制回调
   const handleStartReplay = useCallback(() => {
@@ -171,6 +215,77 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
     [dispatch, negotiationState.isReplaying]
   );
 
+  // ===== 协商摘要数据计算 =====
+  const summaryData = useMemo(() => {
+    const events = negotiationState.events;
+    if (!events || events.length === 0) return null;
+
+    const totalAdjustments = events.reduce(
+      (sum, e) => sum + (e.adjustments?.length || 0), 0
+    );
+
+    // 计算迭代轮数：按 FINALIZED / COUNTER 事件推断
+    const counterCount = events.filter(e => e.eventType === 'COUNTER').length;
+    const iterations = Math.max(counterCount, 1);
+
+    // 获取首尾效用值，判断变化趋势
+    const firstUtility = events.find(e => e.utility?.dispatcher !== undefined)?.utility;
+    const lastUtility = [...events].reverse().find(e => e.utility?.dispatcher !== undefined)?.utility;
+
+    let dispatchTrend: 'up' | 'down' | 'flat' = 'flat';
+    let vehicleTrend: 'up' | 'down' | 'flat' = 'flat';
+    if (firstUtility && lastUtility) {
+      if (lastUtility.dispatcher! > firstUtility.dispatcher! + 0.01) dispatchTrend = 'up';
+      else if (lastUtility.dispatcher! < firstUtility.dispatcher! - 0.01) dispatchTrend = 'down';
+      if (lastUtility.vehicle! > firstUtility.vehicle! + 0.01) vehicleTrend = 'up';
+      else if (lastUtility.vehicle! < firstUtility.vehicle! - 0.01) vehicleTrend = 'down';
+    }
+
+    // 事件类型计数
+    const typeCounts: Record<string, number> = {};
+    events.forEach(e => {
+      typeCounts[e.eventType] = (typeCounts[e.eventType] || 0) + 1;
+    });
+
+    // 总耗时（P2 新增）
+    let totalDuration: string | null = null;
+    if (events.length >= 2) {
+      const firstTs = events[0].timestamp;
+      const lastTs = events[events.length - 1].timestamp;
+      const diffMs = lastTs - firstTs;
+      if (diffMs > 0) {
+        const seconds = Math.floor(diffMs / 1000);
+        if (seconds < 60) {
+          totalDuration = `${seconds}秒`;
+        } else if (seconds < 3600) {
+          totalDuration = `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+        } else {
+          totalDuration = `${Math.floor(seconds / 3600)}时${Math.floor((seconds % 3600) / 60)}分`;
+        }
+      }
+    }
+
+    // 成功/失败状态
+    const hasFinalized = events.some(e => e.eventType === 'FINALIZED');
+    const hasReject = events.some(e => e.eventType === 'REJECT');
+    const status = hasFinalized ? 'success' : hasReject ? 'fail' : 'in_progress';
+
+    return {
+      totalEvents: events.length,
+      totalAdjustments,
+      iterations,
+      firstDispatcher: firstUtility?.dispatcher,
+      lastDispatcher: lastUtility?.dispatcher,
+      firstVehicle: firstUtility?.vehicle,
+      lastVehicle: lastUtility?.vehicle,
+      dispatchTrend,
+      vehicleTrend,
+      typeCounts,
+      totalDuration,
+      status,
+    };
+  }, [negotiationState.events]);
+
   return (
     <Card
       size="small"
@@ -183,6 +298,22 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
               ({negotiationState.events.length} 个事件)
             </Text>
           )}
+          <Popover
+            title="使用说明"
+            content={
+              <div style={{ fontSize: 12, lineHeight: 1.8, maxWidth: 260 }}>
+                <div>▶ <strong>播放/暂停</strong>：自动回放协商全过程</div>
+                <div>⏭ <strong>步进</strong>：手动逐条查看事件</div>
+                <div>🔄 <strong>重置</strong>：回到起点</div>
+                <div>🕐 <strong>点击事件</strong>：跳转到对应时间点</div>
+                <div>🔍 <strong>筛选器</strong>：按事件类型过滤</div>
+              </div>
+            }
+            trigger="click"
+            placement="bottom"
+          >
+            <QuestionCircleOutlined style={{ fontSize: 14, color: 'var(--ink-light, #8a7a70)', cursor: 'pointer' }} />
+          </Popover>
         </Space>
       }
       style={{ marginBottom: 16 }}
@@ -212,8 +343,8 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
               alignItems: 'center',
               gap: 12,
               padding: '8px 0',
-              borderTop: '1px solid #f0f0f0',
-              borderBottom: '1px solid #f0f0f0',
+              borderTop: '1px solid var(--border-faded, #e0d8ce)',
+              borderBottom: '1px solid var(--border-faded, #e0d8ce)',
               marginBottom: 12,
               flexWrap: 'wrap',
             }}
@@ -291,9 +422,119 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
             </Text>
           </div>
 
-          {/* 折叠面板：时间轴 + 效用图 */}
+          {/* ===== 协商摘要卡片（P1 新增） ===== */}
+          {summaryData && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                padding: '8px 12px',
+                marginBottom: 10,
+                background: 'var(--paper-warm, #f0e8da)',
+                border: '1px solid var(--border-faded, #e0d8ce)',
+              }}
+            >
+              {/* 事件总数 */}
+              <Tooltip title="协商过程中产生的总事件数">
+                <Text style={{ fontSize: 12 }}>
+                  <ClockCircleOutlined style={{ marginRight: 4, color: 'var(--stamp-blue, #4a7a8c)' }} />
+                  事件: <Text strong>{summaryData.totalEvents}</Text>
+                </Text>
+              </Tooltip>
+
+              {/* 调整项数 */}
+              {summaryData.totalAdjustments > 0 && (
+                <Tooltip title="字段级调整总数（before → after）">
+                  <Text style={{ fontSize: 12 }}>
+                    <SwapOutlined style={{ marginRight: 4, color: 'var(--stamp-red, #c45a4a)' }} />
+                    调整: <Text strong>{summaryData.totalAdjustments}</Text>
+                  </Text>
+                </Tooltip>
+              )}
+
+              {/* 迭代轮数 */}
+              <Tooltip title="协商迭代轮数（基于反提案次数估算）">
+                <Text style={{ fontSize: 12 }}>
+                  <ReloadOutlined style={{ marginRight: 4, color: 'var(--ink-light, #8a7a70)' }} />
+                  迭代: <Text strong>{summaryData.iterations}</Text> 轮
+                </Text>
+              </Tooltip>
+
+              {/* 调度效用变化趋势 */}
+              {summaryData.firstDispatcher !== undefined && summaryData.lastDispatcher !== undefined && (
+                <Tooltip title={`调度效用: ${summaryData.firstDispatcher.toFixed(2)} → ${summaryData.lastDispatcher.toFixed(2)}`}>
+                  <Text style={{ fontSize: 12 }}>
+                    {summaryData.dispatchTrend === 'up' ? (
+                      <RiseOutlined style={{ color: 'var(--stamp-green, #6a8f6a)', marginRight: 2 }} />
+                    ) : summaryData.dispatchTrend === 'down' ? (
+                      <FallOutlined style={{ color: 'var(--stamp-red, #c45a4a)', marginRight: 2 }} />
+                    ) : (
+                      <MinusOutlined style={{ color: 'var(--ink-light, #8a7a70)', marginRight: 2 }} />
+                    )}
+                    调度: {summaryData.lastDispatcher.toFixed(2)}
+                  </Text>
+                </Tooltip>
+              )}
+
+              {/* 车辆效用变化趋势 */}
+              {summaryData.firstVehicle !== undefined && summaryData.lastVehicle !== undefined && (
+                <Tooltip title={`车辆效用: ${summaryData.firstVehicle.toFixed(2)} → ${summaryData.lastVehicle.toFixed(2)}`}>
+                  <Text style={{ fontSize: 12 }}>
+                    {summaryData.vehicleTrend === 'up' ? (
+                      <RiseOutlined style={{ color: 'var(--stamp-green, #6a8f6a)', marginRight: 2 }} />
+                    ) : summaryData.vehicleTrend === 'down' ? (
+                      <FallOutlined style={{ color: 'var(--stamp-red, #c45a4a)', marginRight: 2 }} />
+                    ) : (
+                      <MinusOutlined style={{ color: 'var(--ink-light, #8a7a70)', marginRight: 2 }} />
+                    )}
+                    车辆: {summaryData.lastVehicle.toFixed(2)}
+                  </Text>
+                </Tooltip>
+              )}
+
+              {/* 总耗时（P2 新增） */}
+              {summaryData.totalDuration && (
+                <Tooltip title="协商过程总耗时">
+                  <Text style={{ fontSize: 12 }}>
+                    <ClockCircleOutlined style={{ marginRight: 4, color: 'var(--ink-light, #8a7a70)' }} />
+                    耗时: <Text strong>{summaryData.totalDuration}</Text>
+                  </Text>
+                </Tooltip>
+              )}
+
+              {/* 协商状态 */}
+              <Tooltip title="协商最终结果">
+                <Text style={{ fontSize: 12 }}>
+                  {summaryData.status === 'success' ? (
+                    <Tag color="green" style={{ fontSize: 10, margin: 0 }}>协商成功</Tag>
+                  ) : summaryData.status === 'fail' ? (
+                    <Tag color="red" style={{ fontSize: 10, margin: 0 }}>协商失败</Tag>
+                  ) : (
+                    <Tag color="processing" style={{ fontSize: 10, margin: 0 }}>进行中</Tag>
+                  )}
+                </Text>
+              </Tooltip>
+            </div>
+          )}
+
+          {/* ===== 事件类型筛选器（P1 新增） ===== */}
+          <div style={{ marginBottom: 8 }}>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="筛选事件类型（默认全部）"
+              value={filterEventTypes}
+              onChange={setFilterEventTypes}
+              size="small"
+              style={{ minWidth: 200 }}
+              options={EVENT_TYPE_OPTIONS}
+            />
+          </div>
+
+          {/* 折叠面板：默认只展开时间轴，其他收起以减少信息过载 */}
           <Collapse
-            defaultActiveKey={['timeline', 'utility']}
+            defaultActiveKey={['timeline']}
             size="small"
             ghost
             style={{ margin: 0 }}
@@ -304,17 +545,29 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
                 <Space>
                   <ClockCircleOutlined />
                   <Text>事件时间轴</Text>
+                  {filterEventTypes.length > 0 && (
+                    <Tag color="geekblue" style={{ fontSize: 10 }}>
+                      已筛选 {filteredEvents.length} 个
+                    </Tag>
+                  )}
                 </Space>
               }
               key="timeline"
             >
               <ScrollableRouteTimeline
-                events={negotiationState.events}
-                replayIndex={negotiationState.replayIndex}
-                onEventClick={handleTimelineEventClick}
+                events={filteredEvents}
+                replayIndex={replayIndexInFilter}
+                onEventClick={(event, _idxInFilter) => {
+                  // 将筛选后的索引映射到原始索引
+                  const originalIdx = negotiationState.events.findIndex(
+                    (e) => e.eventId === event.eventId
+                  );
+                  if (originalIdx >= 0) {
+                    handleTimelineEventClick(event, originalIdx);
+                  }
+                }}
               />
             </Panel>
-
 
             {/* 调整详情汇总 */}
             <Panel
@@ -322,13 +575,9 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
                 <Space>
                   <SwapOutlined />
                   <Text>调整详情汇总</Text>
-                  {negotiationState.events.reduce(
-                    (sum, e) => sum + (e.adjustments?.length || 0), 0
-                  ) > 0 && (
-                    <Tag color="blue" style={{ fontSize: 11 }}>
-                      {negotiationState.events.reduce(
-                        (sum, e) => sum + (e.adjustments?.length || 0), 0
-                      )} 项变更
+                  {summaryData && summaryData.totalAdjustments > 0 && (
+                    <Tag color="geekblue" style={{ fontSize: 11 }}>
+                      {summaryData.totalAdjustments} 项变更
                     </Tag>
                   )}
                 </Space>
@@ -340,8 +589,6 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
                 onEventClick={handleTimelineEventClick}
               />
             </Panel>
-
-
 
             {/* 效用轨迹图 */}
             <Panel

@@ -1105,8 +1105,14 @@ const ItineraryDetail: React.FC = () => {
             保存修改
           </Button>
         </Space>
-      </div>
-      
+            </div>
+
+      {/* ===== 协商过程可视化（放在每日行程之前，作为"幕后故事"） ===== */}
+      <NegotiationVisualizer
+        events={extractEventsFromItinerary(itinerary)}
+        showFullPanel={true}
+      />
+
       {itinerary.day_plans && itinerary.day_plans.length > 0 ? (
         itinerary.day_plans.map((dayPlan: any, index: number) => (
           <Card 
@@ -1137,12 +1143,6 @@ const ItineraryDetail: React.FC = () => {
       ) : (
         <Empty description="暂无行程安排" />
       )}
-
-      {/* 协商可视化面板 - 从 itinerary 数据中提取事件 */}
-      <NegotiationVisualizer
-        events={extractEventsFromItinerary(itinerary)}
-        showFullPanel={true}
-      />
 
       <Divider />
       <Space>

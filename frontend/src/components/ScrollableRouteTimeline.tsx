@@ -7,8 +7,8 @@
  * 3. 当前回放位置高亮
  * 4. 时间轴自动滚动到最新位置
  */
-import React, { useEffect, useRef } from 'react';
-import { Timeline, Typography, Tag, Tooltip } from 'antd';
+import React, { useEffect, useRef, useState } from 'react';
+import { Timeline, Typography, Tag, Tooltip, Button } from 'antd';
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -17,6 +17,8 @@ import {
   SendOutlined,
   FlagOutlined,
   FileSearchOutlined,
+  EllipsisOutlined,
+  RollbackOutlined,
 } from '@ant-design/icons';
 import type { NegotiationEvent } from '../types/negotiation';
 import { EVENT_TYPE_CN, PHASE_MAP_CN } from '../types/negotiation';
@@ -34,13 +36,14 @@ interface ScrollableRouteTimelineProps {
   maxItems?: number;
 }
 
-/** 事件类型对应的颜色 */
+/** 事件类型对应的颜色（与手工感主题一致） */
 const EVENT_COLORS: Record<string, string> = {
-  CFP: 'blue',
+  CFP: 'geekblue',
   PROPOSE: 'orange',
-  COUNTER: 'purple',
+  COUNTER: 'volcano',
   ACCEPT: 'green',
   REJECT: 'red',
+  ROLLBACK: 'warning',
   FINALIZED: 'cyan',
 };
 
@@ -51,6 +54,7 @@ const EVENT_ICONS: Record<string, React.ReactNode> = {
   COUNTER: <SwapOutlined />,
   ACCEPT: <CheckCircleOutlined />,
   REJECT: <CloseCircleOutlined />,
+  ROLLBACK: <RollbackOutlined />,
   FINALIZED: <FlagOutlined />,
 };
 
@@ -69,17 +73,32 @@ const ScrollableRouteTimeline: React.FC<ScrollableRouteTimelineProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // 分页：每页显示的条目数（替代静默截断）
+  const [visibleCount, setVisibleCount] = useState(maxItems);
 
-  // 截取显示的 events
-  const displayEvents = events.slice(-maxItems);
-  const offset = Math.max(0, events.length - maxItems);
+  // 当事件列表变化（新事件到达）时自动增加可见范围
+  useEffect(() => {
+    if (events.length > visibleCount) {
+      setVisibleCount(Math.min(events.length, Math.max(visibleCount + 5, maxItems)));
+    }
+  }, [events.length, maxItems, visibleCount]);
 
-  // 自动滚动到底部
+  // 截取显示的 events（基于分页，而非静默截断）
+  const displayEvents = events.slice(-visibleCount);
+  const offset = Math.max(0, events.length - visibleCount);
+  const hasMore = events.length > visibleCount;
+
+  // 自动滚动到底部（仅当用户不在查看历史时才自动滚）
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [displayEvents.length]);
+
+  // 加载更多
+  const handleLoadMore = () => {
+    setVisibleCount(Math.min(visibleCount + maxItems, events.length));
+  };
 
   // 构建时间轴项目
   const timelineItems = displayEvents.map((event, idx) => {
@@ -191,7 +210,7 @@ const ScrollableRouteTimeline: React.FC<ScrollableRouteTimelineProps> = ({
      
              {/* after 值（绿色） */}
              <Text
-               style={{ fontSize: 11, color: '#52c41a', fontWeight: 500, maxWidth: 100 }}
+               style={{ fontSize: 11, color: 'var(--stamp-green, #6a8f6a)', fontWeight: 500, maxWidth: 100 }}
                ellipsis={{ tooltip: adj.after }}
              >
                {adj.after}
@@ -207,12 +226,12 @@ const ScrollableRouteTimeline: React.FC<ScrollableRouteTimelineProps> = ({
           {event.utility && (event.utility.dispatcher !== undefined || event.utility.vehicle !== undefined) && (
             <div style={{ marginTop: 2 }}>
               {event.utility.dispatcher !== undefined && (
-                <Text style={{ fontSize: 11, color: '#1890ff' }}>
+                <Text style={{ fontSize: 11, color: 'var(--stamp-blue, #4a7a8c)' }}>
                   调度:{event.utility.dispatcher.toFixed(2)}
                 </Text>
               )}
               {event.utility.vehicle !== undefined && (
-                <Text style={{ fontSize: 11, color: '#52c41a', marginLeft: 8 }}>
+                <Text style={{ fontSize: 11, color: 'var(--stamp-green, #6a8f6a)', marginLeft: 8 }}>
                   车辆:{event.utility.vehicle.toFixed(2)}
                 </Text>
               )}
@@ -240,11 +259,21 @@ const ScrollableRouteTimeline: React.FC<ScrollableRouteTimelineProps> = ({
         scrollBehavior: 'smooth',
       }}
     >
-      {/* 索引偏移提示 */}
-      {offset > 0 && (
-        <Text type="secondary" style={{ display: 'block', textAlign: 'center', fontSize: 11, padding: '4px 0' }}>
-          前面还有 {offset} 个事件...
-        </Text>
+      {/* 加载更多（替代静默截断） */}
+      {hasMore && (
+        <div style={{ textAlign: 'center', padding: '4px 0' }}>
+          <Button
+            type="link"
+            size="small"
+            icon={<EllipsisOutlined />}
+            onClick={handleLoadMore}
+          >
+            加载更早的 {Math.min(maxItems, events.length - visibleCount)} 个事件
+          </Button>
+          <Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
+            已显示 {displayEvents.length} / {events.length} 个事件
+          </Text>
+        </div>
       )}
 
       <Timeline items={timelineItems} />

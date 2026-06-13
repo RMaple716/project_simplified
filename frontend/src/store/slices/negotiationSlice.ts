@@ -53,11 +53,12 @@ const negotiationSlice = createSlice({
         state.progress.overallPercent = 100;
       } else {
         const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
-        // 根据事件在阶段内的序号估算百分比
-        const phaseEvents = state.events.filter(e => e.phase === phase);
-        const idx = phaseEvents.length;
-        const totalEstimate = Math.max(phaseEvents.length + 2, 5);
-        const phasePercent = minP + (maxP - minP) * Math.min(idx / totalEstimate, 1);
+        // 改进的进度估算：基于 COUNTER（反提案）次数代表迭代轮数，而非事件总数
+        const counterCount = state.events.filter(e => e.eventType === 'COUNTER').length;
+        // 假设最大合理迭代轮数为 5 轮，超过即视为接近完成
+        const maxIterations = 5;
+        const iterationsProgress = Math.min(counterCount / maxIterations, 1);
+        const phasePercent = minP + (maxP - minP) * iterationsProgress;
         state.progress.overallPercent = Math.round(phasePercent);
       }
 
@@ -88,11 +89,12 @@ const negotiationSlice = createSlice({
         if (phase === 'FINALIZED') {
           state.progress.overallPercent = 100;
         } else {
-          // 根据阶段计算进度百分比范围
+          // 改进的进度估算：基于 COUNTER（反提案）次数
           const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
-          const phaseEvents = action.payload.filter(e => (e.phase || e.eventType) === phase);
-          const phaseIndex = phaseEvents.length;
-          const phasePercent = minP + (maxP - minP) * Math.min(phaseIndex / Math.max(phaseEvents.length, 5), 1);
+          const counterCount = action.payload.filter(e => e.eventType === 'COUNTER').length;
+          const maxIterations = 5;
+          const iterationsProgress = Math.min(counterCount / maxIterations, 1);
+          const phasePercent = minP + (maxP - minP) * iterationsProgress;
           state.progress.overallPercent = Math.min(Math.round(phasePercent), 100);
         }
 
@@ -184,6 +186,8 @@ function generateSummary(event: NegotiationEvent): string {
       return '达成协议，路线确认中...';
     case 'REJECT':
       return '协商未能达成一致';
+    case 'ROLLBACK':
+      return `策略失败，回退到上一步（${from} → ${to}）`;
     case 'FINALIZED':
       return '规划完成！';
     default:

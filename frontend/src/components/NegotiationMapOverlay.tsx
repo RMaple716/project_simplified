@@ -20,6 +20,8 @@ import type { NegotiationEvent } from '../types/negotiation';
 interface NegotiationMapOverlayProps {
   /** 高德地图实例 */
   map: any;
+  /** 高德地图构造函数（通过 props 注入，避免全局变量依赖，P2 修复） */
+  AMap?: any;
   /** 协商事件列表（将根据事件的 routePreview 绘制） */
   events: NegotiationEvent[];
   /** 是否可见 */
@@ -37,14 +39,17 @@ interface RouteLineState {
   accepted: boolean;
 }
 
-const DEFAULT_COLORS = ['#FF5733', '#33B5FF', '#75C940', '#FFBB33', '#AA66CC'];
+const DEFAULT_COLORS = ['#c45a4a', '#4a7a8c', '#6a8f6a', '#8a7a70', '#2c2420'];
 
 const NegotiationMapOverlay: React.FC<NegotiationMapOverlayProps> = ({
   map,
+  AMap: AMapProp,
   events,
   visible = true,
   replayIndex = -1,
 }) => {
+  // 优先使用 props 注入的 AMap，否则回退到全局对象
+  const getAMap = useCallback(() => AMapProp || (window as any).AMap, [AMapProp]);
   const layerGroupRef = useRef<any>(null);
   const routeLinesRef = useRef<Map<string, RouteLineState>>(new Map());
   const animFrameRef = useRef<number>(0);
@@ -79,8 +84,9 @@ const NegotiationMapOverlay: React.FC<NegotiationMapOverlayProps> = ({
     }
 
     // 延迟初始化图层组
-    if (!layerGroupRef.current && window.AMap) {
-      layerGroupRef.current = new (window as any).AMap.LayerGroup();
+    const AMap = getAMap();
+    if (!layerGroupRef.current && AMap) {
+      layerGroupRef.current = new AMap.LayerGroup();
       layerGroupRef.current.setMap(map);
     }
 
@@ -91,7 +97,8 @@ const NegotiationMapOverlay: React.FC<NegotiationMapOverlayProps> = ({
     // 使用 requestAnimationFrame 批量更新
     cancelAnimationFrame(animFrameRef.current);
     animFrameRef.current = requestAnimationFrame(() => {
-      if (!window.AMap) return;
+      const AMap = getAMap();
+      if (!AMap) return;
 
       const visibleEvents = getVisibleEvents();
       const activeVehicleIds = new Set<string>();
@@ -124,11 +131,11 @@ const NegotiationMapOverlay: React.FC<NegotiationMapOverlayProps> = ({
 
         // 构建坐标数组
         const path = rp.coordinates.map(
-          (coord: [number, number]) => new (window as any).AMap.LngLat(coord[0], coord[1])
+          (coord: [number, number]) => new AMap.LngLat(coord[0], coord[1])
         );
 
-        // 创建 Polyline
-        const polyline = new (window as any).AMap.Polyline({
+        // 创建 Polyline（P2 新增：路径生长动画）
+        const polyline = new AMap.Polyline({
           path,
           strokeColor: color,
           strokeWeight: 4,
@@ -138,17 +145,34 @@ const NegotiationMapOverlay: React.FC<NegotiationMapOverlayProps> = ({
           lineJoin: 'round',
           lineCap: 'round',
           zIndex: isAccepted ? 120 : 100,
+          showDir: true,
         });
+
+        // 如果是从 dashed 变为 solid（刚被接受），做一次闪烁动画
+        if (isAccepted && existing && !existing.accepted) {
+          let flashCount = 0;
+          const flashTimer = setInterval(() => {
+            flashCount++;
+            if (flashCount > 6) {
+              clearInterval(flashTimer);
+              return;
+            }
+            // 交替 0.3/0.9 透明度产生闪烁效果
+            polyline.setOptions({
+              strokeOpacity: flashCount % 2 === 0 ? 0.9 : 0.3,
+            });
+          }, 200);
+        }
 
         // 创建标签（显示价格等）
         let label = null;
         if (event.proposal?.price !== undefined) {
           const lastCoord = rp.coordinates[rp.coordinates.length - 1];
-          label = new (window as any).AMap.Text({
+          label = new AMap.Text({
             text: `¥${event.proposal.price}`,
             anchor: 'bottom-center',
-            offset: new (window as any).AMap.Pixel(0, -8),
-            position: new (window as any).AMap.LngLat(lastCoord[0], lastCoord[1]),
+            offset: new AMap.Pixel(0, -8),
+            position: new AMap.LngLat(lastCoord[0], lastCoord[1]),
             style: {
               'font-size': '12px',
               'font-weight': 'bold',

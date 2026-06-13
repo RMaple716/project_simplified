@@ -3,10 +3,9 @@
  * 按策略分组展示所有字段级变化（before → after）
  */
 import React, { useMemo } from 'react';
-import {  Typography, Tag, Empty, Tooltip } from 'antd';
-import { ArrowRightOutlined } from '@ant-design/icons';
+import { Typography, Tag, Empty, Tooltip, Button, Space, message } from 'antd';
+import { ArrowRightOutlined, RiseOutlined, FallOutlined, MinusOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import type { NegotiationEvent } from '../types/negotiation';
-
 const { Text } = Typography;
 
 interface NegotiationAdjustmentSummaryProps {
@@ -18,9 +17,15 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
   events,
   onEventClick,
 }) => {
-  // 按事件筛选出有调整详情的事件
+  // 按事件筛选出有调整详情的事件，同时保留其在原始 events 中的索引
   const adjustmentEvents = useMemo(() => {
-    return events.filter(e => e.adjustments && e.adjustments.length > 0);
+    const result: { event: NegotiationEvent; originalIndex: number }[] = [];
+    events.forEach((e, i) => {
+      if (e.adjustments && e.adjustments.length > 0) {
+        result.push({ event: e, originalIndex: i });
+      }
+    });
+    return result;
   }, [events]);
 
   if (adjustmentEvents.length === 0) {
@@ -29,7 +34,7 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
 
   return (
     <div style={{ maxHeight: 400, overflowY: 'auto', padding: '4px 0' }}>
-      {adjustmentEvents.map((event, eventIdx) => {
+      {adjustmentEvents.map(({ event, originalIndex }, eventIdx) => {
         const timestamp = new Date(event.timestamp);
         const timeStr = `${timestamp.getHours().toString().padStart(2, '0')}:${timestamp.getMinutes().toString().padStart(2, '0')}:${timestamp.getSeconds().toString().padStart(2, '0')}`;
 
@@ -37,14 +42,14 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
           <div
             key={event.eventId || `adj-event-${eventIdx}`}
             style={{
-              marginBottom: 16,
+                            marginBottom: 16,
               padding: 12,
-              background: eventIdx % 2 === 0 ? '#fafafa' : '#fff',
+              background: eventIdx % 2 === 0 ? 'var(--paper-warm, #f0e8da)' : 'var(--paper-light, #faf7f2)',
               borderRadius: 6,
-              border: '1px solid #f0f0f0',
+              border: '1px solid var(--border-faded, #e0d8ce)',
               cursor: onEventClick ? 'pointer' : 'default',
             }}
-            onClick={() => onEventClick?.(event, eventIdx)}
+            onClick={() => onEventClick?.(event, originalIndex)}
           >
             {/* 事件头部：策略名 + 时间 */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -54,10 +59,38 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
               <Text type="secondary" style={{ fontSize: 11 }}>
                 {timeStr}
               </Text>
-              <Text style={{ fontSize: 11, color: '#666' }}>
+                            <Text style={{ fontSize: 11, color: 'var(--ink-light, #8a7a70)' }}>
                 {event.fromAgent} → {event.toAgent}
               </Text>
             </div>
+
+                        {/* 用户反馈按钮（P2 预置框架，外部回调时启用） */}
+            <Space size="small" style={{ marginTop: 6, marginBottom: 4 }}>
+              <Button
+                size="small"
+                type="text"
+                icon={<CheckOutlined />}
+                style={{ fontSize: 11, color: 'var(--stamp-green, #6a8f6a)' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  message.info('接受功能待后端对接');
+                }}
+              >
+                接受
+              </Button>
+              <Button
+                size="small"
+                type="text"
+                icon={<CloseOutlined />}
+                style={{ fontSize: 11, color: 'var(--stamp-red, #c45a4a)' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  message.info('拒绝功能待后端对接');
+                }}
+              >
+                拒绝
+              </Button>
+            </Space>
 
             {/* 调整详情列表 */}
             {event.adjustments?.map((adj, adjIdx) => (
@@ -69,14 +102,14 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
                   gap: 8,
                   padding: '4px 8px',
                   marginBottom: 4,
-                  background: '#fff',
+                  background: 'var(--paper-light, #faf7f2)',
                   borderRadius: 4,
-                  border: '1px dashed #e8e8e8',
+                  border: '1px dashed var(--border-faded, #e0d8ce)',
                   flexWrap: 'wrap',
                 }}
               >
                 {/* 字段标签 */}
-                <Tag color="blue" style={{ fontSize: 10, margin: 0, flexShrink: 0 }}>
+                <Tag color="geekblue" style={{ fontSize: 10, margin: 0, flexShrink: 0 }}>
                   {adj.field}
                 </Tag>
 
@@ -101,17 +134,35 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
                 </Tooltip>
 
                 {/* 箭头 */}
-                <ArrowRightOutlined style={{ color: '#faad14', fontSize: 12 }} />
+                <ArrowRightOutlined style={{ color: 'var(--stamp-red, #c45a4a)', fontSize: 12 }} />
 
                 {/* after（绿色） */}
                 <Tooltip title={`调整后: ${adj.after}`}>
                   <Text
-                    style={{ fontSize: 12, color: '#52c41a', fontWeight: 600, maxWidth: 120 }}
+                    style={{ fontSize: 12, color: 'var(--stamp-green, #6a8f6a)', fontWeight: 600, maxWidth: 120 }}
                     ellipsis={{ tooltip: adj.after }}
                   >
                     {adj.after}
                   </Text>
                 </Tooltip>
+
+                {/* 变化量指示（P2 新增） */}
+                {(() => {
+                  const bv = parseFloat(adj.before);
+                  const av = parseFloat(adj.after);
+                  if (!isNaN(bv) && !isNaN(av) && bv !== 0) {
+                    const diff = av - bv;
+                    const pct = ((diff / Math.abs(bv)) * 100).toFixed(1);
+                    return (
+                      <Tooltip title={`变化: ${diff > 0 ? '+' : ''}${diff.toFixed(1)} (${pct}%)`}>
+                        <Text style={{ fontSize: 11, color: diff > 0 ? 'var(--stamp-green, #6a8f6a)' : diff < 0 ? 'var(--stamp-red, #c45a4a)' : 'var(--ink-light, #8a7a70)' }}>
+                          {diff > 0 ? <><RiseOutlined /> +{pct}%</> : diff < 0 ? <><FallOutlined /> {pct}%</> : <><MinusOutlined /> 0%</>}
+                        </Text>
+                      </Tooltip>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             ))}
           </div>

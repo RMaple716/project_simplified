@@ -1803,7 +1803,7 @@ async def negotiate_and_fix(
                             from_agent="dispatcher",
                             to_agent="all_vehicles",
                             phase=NegotiationPhase.NEGOTIATE,
-                            proposal={"action": "跨天移动", "target": conflict.get("activities", [])},
+                            proposal={"action": "跨天移动", "target": conflict.get("activities", []), "adjustments": adjustments},
                             utility={"dispatcher": 0.65, "vehicle": 0.55},
                         ))
                         conflict_fixed = True
@@ -1833,7 +1833,7 @@ async def negotiate_and_fix(
                                 from_agent="dispatcher",
                                 to_agent=f"day_{day_num}",
                                 phase=NegotiationPhase.NEGOTIATE,
-                                proposal={"action": "组合修复(压缩+平移)", "target": conflict.get("activities", [])},
+                                proposal={"action": "组合修复(压缩+平移)", "target": conflict.get("activities", []), "adjustments": adjustments},
                                 utility={"dispatcher": 0.5, "vehicle": 0.45},
                                 route_preview=build_route_preview(vehicle_id=f"day{day_num}", coordinates=[]),
                             ))
@@ -1862,7 +1862,7 @@ async def negotiate_and_fix(
                                 from_agent="dispatcher",
                                 to_agent=f"day_{day_num}",
                                 phase=NegotiationPhase.NEGOTIATE,
-                                proposal={"action": "组合修复(时段交换+平移)", "target": conflict.get("activities", [])},
+                                proposal={"action": "组合修复(时段交换+平移)", "target": conflict.get("activities", []), "adjustments": adjustments},
                                 utility={"dispatcher": 0.48, "vehicle": 0.42},
                                 route_preview=build_route_preview(vehicle_id=f"day{day_num}", coordinates=[]),
                             ))
@@ -1892,15 +1892,15 @@ async def negotiate_and_fix(
                                 "adjustments": adjustments,
                             })
                             await event_bus.publish(session_id, create_negotiation_event(
-                                event_type=NegotiationEventType.COUNTER,
-                                session_id=session_id,
-                                from_agent="dispatcher",
-                                to_agent="all_vehicles",
-                                phase=NegotiationPhase.NEGOTIATE,
-                                proposal={"action": "闭馆日解决", "target": conflict.get("activities", [])},
-                                utility={"dispatcher": 0.55, "vehicle": 0.6},
-                            ))
-                            conflict_fixed = True
+                                    event_type=NegotiationEventType.COUNTER,
+                                    session_id=session_id,
+                                    from_agent="dispatcher",
+                                    to_agent="all_vehicles",
+                                    phase=NegotiationPhase.NEGOTIATE,
+                                    proposal={"action": "闭馆日解决", "target": conflict.get("activities", []), "adjustments": adjustments},
+                                    utility={"dispatcher": 0.55, "vehicle": 0.6},
+                                ))
+                conflict_fixed = True
 
                 # 策略9(原策略8)：交通段拆分（针对 time_overlap 中交通与餐饮重叠）
                 if not conflict_fixed:
@@ -1969,7 +1969,7 @@ async def negotiate_and_fix(
                                 from_agent="dispatcher",
                                 to_agent="all_vehicles",
                                 phase=NegotiationPhase.NEGOTIATE,
-                                proposal={"action": "地理距离拆分", "target": conflict.get("activities", [])},
+                                proposal={"action": "地理距离拆分", "target": conflict.get("activities", []), "adjustments": adjustments},
                                 utility={"dispatcher": 0.58, "vehicle": 0.5},
                             ))
                             conflict_fixed = True
@@ -1998,7 +1998,7 @@ async def negotiate_and_fix(
                                 from_agent="dispatcher",
                                 to_agent=f"day_{day_num}",
                                 phase=NegotiationPhase.NEGOTIATE,
-                                proposal={"action": "地理距离替换", "target": conflict.get("activities", [])},
+                                proposal={"action": "地理距离替换", "target": conflict.get("activities", []), "adjustments": adjustments},
                                 utility={"dispatcher": 0.5, "vehicle": 0.45},
                             ))
                             conflict_fixed = True

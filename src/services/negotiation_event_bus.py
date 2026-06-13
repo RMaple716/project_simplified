@@ -114,6 +114,11 @@ def create_negotiation_event(
         "utility": utility or {},
         "routePreview": route_preview or {},
     }
+
+    # 将 adjustments 从 proposal 提升到事件顶层（前端需要）
+    if proposal and "adjustments" in proposal:
+        event["adjustments"] = proposal.pop("adjustments")
+
     if extra:
         event.update(extra)
     return event
@@ -385,9 +390,12 @@ class EventPersistenceService:
                         if "negotiation_events" not in day_plans[0]:
                             day_plans[0]["negotiation_events"] = []
                         day_plans[0]["negotiation_events"].append(event)
-                        itinerary.day_plans = day_plans
+                        itinerary.day_plans = day_plans  # type: ignore
                         db.commit()
                         return True
+                    # day_plans 为空，无法持久化
+                    logger.debug(f"[事件持久化] session={session_id} day_plans为空，跳过持久化")
+                    return False
                 else:
                     # 如果行程不存在，尝试通过 NegotiationEventLog 表保存
                     # 使用 raw SQL 或创建新的日志条目
@@ -425,7 +433,7 @@ class EventPersistenceService:
                         existing = day_plans[0].get("negotiation_events", [])
                         existing.extend(events)
                         day_plans[0]["negotiation_events"] = existing
-                        itinerary.day_plans = day_plans
+                        itinerary.day_plans = day_plans  # type: ignore
                         db.commit()
                         return True
                 return False
@@ -449,7 +457,7 @@ class EventPersistenceService:
                     Itinerary.itinerary_id == session_id
                 ).first()
 
-                if itinerary and itinerary.day_plans:
+                if itinerary is not None and itinerary.day_plans is not None:
                     day_plans = itinerary.day_plans
                     if isinstance(day_plans, list) and len(day_plans) > 0:
                         return day_plans[0].get("negotiation_events", [])
@@ -664,7 +672,7 @@ class NegotiationEventBus:
         """清空所有事件日志"""
         self._session_logs.clear()
         self._session_access.clear()
-        self._message_history.clear()
+        self.agent_bus.clear_session("default")  # 清空所有 agent 消息
 
     @property
     def session_count(self) -> int:

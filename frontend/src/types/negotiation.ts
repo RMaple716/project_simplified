@@ -17,8 +17,9 @@ export type NegotiationEventType =
   | 'COUNTER'      // 反提案
   | 'ACCEPT'       // 接受
   | 'REJECT'       // 拒绝
+  | 'ROLLBACK'     // 回退到上一步（策略失败后回滚）
   | 'FINALIZED'    // 最终确定
-  | 'AGENT_MSG';   // 【新增】Agent间消息
+  | 'AGENT_MSG';   // Agent间消息
 
 /** 协商阶段 */
 export type NegotiationPhase =
@@ -137,8 +138,9 @@ export const EVENT_TYPE_CN: Record<NegotiationEventType, string> = {
   COUNTER: '反提案',
   ACCEPT: '接受协议',
   REJECT: '拒绝',
+  ROLLBACK: '回退',
   FINALIZED: '最终确定',
-  AGENT_MSG: 'Agent通信', // 【新增】
+  AGENT_MSG: 'Agent通信',
 };
 
 /** Agent消息类型到中文描述的映射 */
