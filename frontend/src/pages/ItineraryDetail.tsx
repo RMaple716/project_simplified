@@ -95,11 +95,22 @@ const AttractionForm: React.FC<{
 }> = ({ initialValues, onSubmit, onCancel }) => {
   const [form] = Form.useForm();
 
+    /** 判断字符串是否为有效的 HH:mm 时间格式 */
+  const isValidTimeFormat = (str: string): boolean => /^\d{1,2}:\d{2}$/.test(str);
+
   useEffect(() => {
     if (initialValues) {
+      // visit_time 可能是 "上午"/"下午"/"晚上" 等中文时段，不是有效 HH:mm 格式
+      // 此时用 start_time 作为 TimePicker 的初始值
+      const rawVisitTime = initialValues.visit_time || '';
+      const timeValue = isValidTimeFormat(rawVisitTime)
+        ? dayjs(rawVisitTime, 'HH:mm')
+        : initialValues.start_time && isValidTimeFormat(initialValues.start_time)
+          ? dayjs(initialValues.start_time, 'HH:mm')
+          : null;
       form.setFieldsValue({
         ...initialValues,
-        visit_time: initialValues.visit_time ? dayjs(initialValues.visit_time, 'HH:mm') : null,
+        visit_time: timeValue,
       });
     }
   }, [initialValues, form]);
@@ -186,11 +197,24 @@ const MealForm: React.FC<{
 }> = ({ initialValues, onSubmit, onCancel }) => {
   const [form] = Form.useForm();
 
+    /** 判断字符串是否为有效的 HH:mm 时间格式 */
+  const isValidTimeFormat = (str: string): boolean => /^\d{1,2}:\d{2}$/.test(str);
+
   useEffect(() => {
     if (initialValues) {
+      // meal_time 可能是 "中午"/"早上"/"晚上" 等中文时段，不是有效 HH:mm 格式
+      // 此时用 start_time 或 time 字段作为 TimePicker 的初始值
+      const rawMealTime = initialValues.meal_time || '';
+      const timeValue = isValidTimeFormat(rawMealTime)
+        ? dayjs(rawMealTime, 'HH:mm')
+        : initialValues.start_time && isValidTimeFormat(initialValues.start_time)
+          ? dayjs(initialValues.start_time, 'HH:mm')
+          : initialValues.time && isValidTimeFormat(initialValues.time)
+            ? dayjs(initialValues.time, 'HH:mm')
+            : null;
       form.setFieldsValue({
         ...initialValues,
-        meal_time: initialValues.meal_time ? dayjs(initialValues.meal_time, 'HH:mm') : null,
+        meal_time: timeValue,
       });
     }
   }, [initialValues, form]);
@@ -307,12 +331,19 @@ const AttractionCard: React.FC<{
           {attraction.description}
         </Text>
       )}
-      <Space size="small">
-        {(attraction.visit_time || attraction.start_time) && (
+
+                            {(() => {
+        // 优先展示具体时间 HH:mm-HH:mm，其次 visit_time（上午/下午/晚上）
+        const timeDisplay = attraction.start_time
+          ? `${attraction.start_time}${attraction.end_time ? `-${attraction.end_time}` : ''}`
+          : attraction.visit_time || '';
+        if (!timeDisplay) return null;
+        return (
           <Tag icon={<ClockCircleOutlined />} color="blue">
-            {attraction.visit_time || `${attraction.start_time}${attraction.end_time ? `-${attraction.end_time}` : ''}`}
+            {timeDisplay}
           </Tag>
-        )}
+        );
+      })()}
         {attraction.visit_duration && (
           <Tag icon={<ClockCircleOutlined />}>
             {attraction.visit_duration}
@@ -328,7 +359,6 @@ const AttractionCard: React.FC<{
             {formatLocation(attraction.location)}
           </Tag>
 )}
-      </Space>
     </Space>
   </Card>
 );
@@ -383,13 +413,18 @@ const MealCard: React.FC<{
         <Text type="secondary" style={{ fontSize: 12 }}>
           {meal.cuisine_type}
         </Text>
-      )}
+            )}
       <Space size="small">
-        {meal.meal_time && (
-          <Tag icon={<ClockCircleOutlined />} color="blue">
-            {meal.meal_time}
-          </Tag>
-        )}
+        {(() => {
+          // 优先显示具体用餐时间 HH:mm，其次 meal_time（早上/中午/晚上）
+          const mealTimeDisplay = meal.start_time || meal.time || meal.meal_time || '';
+          if (!mealTimeDisplay) return null;
+          return (
+            <Tag icon={<ClockCircleOutlined />} color="blue">
+              {mealTimeDisplay}
+            </Tag>
+          );
+        })()}
         {meal.avg_price && (
           <Tag icon={<DollarOutlined />} color="green">
             ¥{meal.avg_price}/人

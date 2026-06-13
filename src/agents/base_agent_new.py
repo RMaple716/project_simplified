@@ -67,58 +67,93 @@ class BaseAgent(ABC):
             try:
                 return json.loads(json_text)
             except json.JSONDecodeError:
-                # 尝试修复被截断的JSON
-                return self._fix_truncated_json(json_text)
+                result = self._fix_truncated_json(json_text)
+                if result:
+                    return result
 
-        raise ValueError(f"无法解析响应为JSON: {response_text}")
+        # 最后尝试：从后向前逐步截断查找合法JSON
+        start_idx = response_text.find('{')
+        if start_idx != -1:
+            search_end = response_text.rfind('}')
+            if search_end == -1:
+                search_end = len(response_text)
+            for end_idx in range(search_end, start_idx, -1):
+                chunk = response_text[start_idx:end_idx + 1]
+                if chunk.rstrip()[-1] in (',', ':'):
+                    continue
+                try:
+                    return json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"[BaseAgent] 无法解析响应为JSON，返回空字典。原始文本前200字符: {response_text[:200]}")
+        return {}
 
     def _fix_truncated_json(self, json_text: str) -> Dict[str, Any]:
-        """尝试修复被截断的JSON"""
+        """尝试修复被截断的JSON（增强版）"""
         import json
 
-        # 统计括号
+        # 尝试1：补充缺失的闭合括号
         open_braces = json_text.count('{')
         close_braces = json_text.count('}')
         open_brackets = json_text.count('[')
         close_brackets = json_text.count(']')
 
-        # 补充缺失的闭合括号
         fixed_json = json_text
         if open_brackets > close_brackets:
             fixed_json += ']' * (open_brackets - close_brackets)
         if open_braces > close_braces:
             fixed_json += '}' * (open_braces - close_braces)
 
-        # 如果最后一个字符不是引号，可能需要补全字符串
-        if fixed_json.rstrip().endswith('"'):
-            fixed_json = fixed_json.rstrip()[:-1]
+        # 如果最后一个字符是引号开头（不完整的字符串值），移除它
+        stripped = fixed_json.rstrip()
+        if stripped.endswith('"') and not stripped.endswith('\\"'):
+            # 检查是否可能是不完整的字符串值
+            pass
 
         try:
             return json.loads(fixed_json)
         except json.JSONDecodeError:
-            # 如果还是失败，尝试更激进的修复
-            # 找到最后一个完整的对象
-            last_comma_idx = fixed_json.rfind(',')
-            if last_comma_idx != -1:
-                # 检查逗号后面是否有引号
-                remaining = fixed_json[last_comma_idx + 1:].strip()
-                if not remaining.startswith('"'):
-                    # 删除不完整的最后一个元素
-                    fixed_json = fixed_json[:last_comma_idx]
-                    # 重新补充闭合括号
-                    open_braces = fixed_json.count('{')
-                    close_braces = fixed_json.count('}')
-                    open_brackets = fixed_json.count('[')
-                    close_brackets = fixed_json.count(']')
-                    if open_brackets > close_braces:
-                        fixed_json += ']' * (open_brackets - close_brackets)
-                    if open_braces > close_braces:
-                        fixed_json += '}' * (open_braces - close_braces)
+            pass
 
-                    try:
-                        return json.loads(fixed_json)
-                    except json.JSONDecodeError:
-                        pass
+        # 尝试2：删除最后一个不完整元素（逗号后的内容）
+        last_comma_idx = fixed_json.rfind(',')
+        if last_comma_idx != -1:
+            remaining = fixed_json[last_comma_idx + 1:].strip()
+            if not remaining.startswith('"'):
+                fixed_json = fixed_json[:last_comma_idx]
+                open_braces = fixed_json.count('{')
+                close_braces = fixed_json.count('}')
+                open_brackets = fixed_json.count('[')
+                close_brackets = fixed_json.count(']')
+                if open_brackets > close_brackets:
+                    fixed_json += ']' * (open_brackets - close_brackets)
+                if open_braces > close_braces:
+                    fixed_json += '}' * (open_braces - close_braces)
+                try:
+                    return json.loads(fixed_json)
+                except json.JSONDecodeError:
+                    pass
 
-        # 如果所有修复都失败，返回空字典
+        # 尝试3：如果存在不完整的键值对，删除最后一个键值对
+        last_key_match = fixed_json.rfind('"')
+        if last_key_match > fixed_json.rfind('{'):
+            next_comma = fixed_json.rfind(',', 0, last_key_match)
+            if next_comma != -1:
+                fixed_json = fixed_json[:next_comma]
+                open_braces = fixed_json.count('{')
+                close_braces = fixed_json.count('}')
+                open_brackets = fixed_json.count('[')
+                close_brackets = fixed_json.count(']')
+                if open_brackets > close_brackets:
+                    fixed_json += ']' * (open_brackets - close_brackets)
+                if open_braces > close_braces:
+                    fixed_json += '}' * (open_braces - close_braces)
+                try:
+                    return json.loads(fixed_json)
+                except json.JSONDecodeError:
+                    pass
+
         return {}

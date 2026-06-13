@@ -200,11 +200,26 @@ def strategy_time_shift(
     if all_items and all_items[-1]["data"]["_new_end"] > 1320:
         return None
 
-    # 应用新时间到活动数据
+        # 应用新时间到活动数据
     for item in all_items:
         data = item["data"]
         data["start_time"] = minutes_to_time_str(data["_new_start"])
         data["end_time"] = minutes_to_time_str(data["_new_end"])
+        # 同步中文时段标签和时间字段
+        if item["type"] == "attraction":
+            hour_val = data["_new_start"] / 60
+            data["visit_time"] = "上午" if hour_val < 12 else ("下午" if hour_val < 17 else "晚上")
+            data["visit_time_slot"] = "morning" if hour_val < 12 else ("afternoon" if hour_val < 17 else "evening")
+        elif item["type"] == "meal":
+            data["time"] = data["start_time"]
+            # 根据小时数更新 meal_time 中文时段标签
+            hour_val = data["_new_start"] / 60
+            if hour_val < 9:
+                data["meal_time"] = "早上"
+            elif hour_val < 14:
+                data["meal_time"] = "中午"
+            else:
+                data["meal_time"] = "晚上"
         # 清理临时字段
         for key in ("_start_m", "_end_m", "_new_start", "_new_end"):
             data.pop(key, None)
@@ -266,11 +281,13 @@ def strategy_swap_time_slot(day_plan: dict, conflict: dict) -> Optional[dict]:
                 meal["start_time"] = "12:30"
                 meal["end_time"] = "13:30"
                 meal["time"] = "12:30"
+                meal["meal_time"] = "中午"
                 logger.info(f"[协商] 策略2: 午餐'{name}' 推迟到12:30")
             elif meal_type in ("dinner",) or "晚餐" in name:
                 meal["start_time"] = "17:30"
                 meal["end_time"] = "18:30"
                 meal["time"] = "17:30"
+                meal["meal_time"] = "晚上"
                 logger.info(f"[协商] 策略2: 晚餐'{name}' 推迟到17:30")
 
     return plan
@@ -512,14 +529,28 @@ def strategy_adjust_opening_hours(day_plan: dict, conflict: dict) -> Optional[di
     if all_items and all_items[-1]["data"]["_new_end"] > 1320:
         return None
 
-    for item in all_items:
-        data = item["data"]
+        for item in all_items:
+            data = item["data"]
         data["start_time"] = minutes_to_time_str(data["_new_start"])
         data["end_time"] = minutes_to_time_str(data["_new_end"])
+        # 同步中文时段标签和时间字段
+        if item["type"] == "attraction":
+            hour_val = data["_new_start"] / 60
+            data["visit_time"] = "上午" if hour_val < 12 else ("下午" if hour_val < 17 else "晚上")
+            data["visit_time_slot"] = "morning" if hour_val < 12 else ("afternoon" if hour_val < 17 else "evening")
+        elif item["type"] == "meal":
+            data["time"] = data["start_time"]
+            hour_val = data["_new_start"] / 60
+            if hour_val < 9:
+                data["meal_time"] = "早上"
+            elif hour_val < 14:
+                data["meal_time"] = "中午"
+            else:
+                data["meal_time"] = "晚上"
         for key in ("_start_m", "_end_m", "_new_start", "_new_end"):
             data.pop(key, None)
 
-        plan["attractions"] = [it["data"] for it in all_items]
+    plan["attractions"] = [it["data"] for it in all_items]
 
     return plan
 

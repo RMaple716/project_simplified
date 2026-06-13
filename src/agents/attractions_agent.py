@@ -85,9 +85,8 @@ class AttractionsAgent(BaseAgent):
 9. **【重要】必须包含该城市最具代表性的核心景点（如衡阳必须包含南岳衡山）**，不能遗漏用户所在城市的标志性景点。核心景点优先安排。
 10. **【关键】如果用户的「偏好」列表中包含具体的景点名称（如"衡山""故宫""黄山"等），则该景点为必去景点，必须包含在推荐结果中。** 请先解析偏好列表，识别其中的具体景点名称，确保这些景点被优先列入行程。
 
-返回格式：
-{
-  "attractions": [
+**【重要】你只能返回一个纯JSON对象，不要包含任何其他文字、不要使用markdown代码块、不要添加注释。直接返回以下格式的JSON：**
+{"attractions": [
     {
       "attraction_id": "att_001",
       "name": "景点名称",
@@ -163,6 +162,20 @@ class AttractionsAgent(BaseAgent):
             else:
                 response_content = await self.call_llm(messages, max_tokens=8192)
                 result = self._parse_json_response(response_content)
+                # 如果解析后attractions为空，尝试用更宽松的方式从原始响应中提取
+                if not result.get("attractions"):
+                    import json as _json
+                    import re as _re
+                    # 尝试直接从文本中提取任何JSON数组
+                    array_match = _re.search(r'"attractions"\s*:\s*\[.*?\]', response_content, _re.DOTALL)
+                    if array_match:
+                        try:
+                            raw = "{" + array_match.group(0) + "}"
+                            parsed = _json.loads(raw)
+                            if parsed.get("attractions"):
+                                result = parsed
+                        except _json.JSONDecodeError:
+                            pass
 
             processing_time = (time.time() - start_time) * 1000
 
@@ -391,6 +404,18 @@ class AttractionsAgent(BaseAgent):
                 response_content = await self.call_llm(messages, max_tokens=4000)
                 batch_result = self._parse_json_response(response_content)
                 batch_attractions = batch_result.get("attractions", [])
+                # 如果解析后attractions为空，尝试用更宽松的方式从原始响应中提取
+                if not batch_attractions:
+                    import json as _json
+                    import re as _re
+                    array_match = _re.search(r'"attractions"\s*:\s*\[.*?\]', response_content, _re.DOTALL)
+                    if array_match:
+                        try:
+                            raw = "{" + array_match.group(0) + "}"
+                            parsed = _json.loads(raw)
+                            batch_attractions = parsed.get("attractions", [])
+                        except _json.JSONDecodeError:
+                            pass
 
                 # 更新景点的day_index，标记它们属于哪一天
                 for attraction in batch_attractions:
