@@ -1,8 +1,14 @@
 /**
- * 协商可视化相关类型定义
+ * 协商可视化相关类型定义（增强版）
  *
- * 对应后端 NegotiationEventBus 的事件结构
+ * 【新增内容】
+ * - AGENT_MSG 事件类型（Agent间通信）
+ * - AgentMessage 类型定义
+ * - WebSocket 连接状态
+ * - 消息类型枚举
  */
+
+// ==================== 事件类型 ====================
 
 /** 协商事件类型 */
 export type NegotiationEventType =
@@ -11,7 +17,8 @@ export type NegotiationEventType =
   | 'COUNTER'      // 反提案
   | 'ACCEPT'       // 接受
   | 'REJECT'       // 拒绝
-  | 'FINALIZED';   // 最终确定
+  | 'FINALIZED'    // 最终确定
+  | 'AGENT_MSG';   // 【新增】Agent间消息
 
 /** 协商阶段 */
 export type NegotiationPhase =
@@ -21,6 +28,45 @@ export type NegotiationPhase =
   | 'NEGOTIATE'
   | 'FINALIZING'
   | 'FINALIZED';
+
+// ==================== Agent间消息类型（新增） ====================
+
+/** Agent消息类型枚举 */
+export const AgentMessageType = {
+  COORDINATE_REQUEST: 'coordinate_request',
+  COORDINATE_RESPONSE: 'coordinate_response',
+  SCHEDULE_PROPOSAL: 'schedule_proposal',
+  SCHEDULE_FEEDBACK: 'schedule_feedback',
+  LOCATION_SHARE: 'location_share',
+  CONSTRAINT_NOTIFY: 'constraint_notify',
+  PREFERENCE_QUERY: 'preference_query',
+  PREFERENCE_RESPONSE: 'preference_response',
+} as const;
+
+export type AgentMessageTypeEnum = typeof AgentMessageType[keyof typeof AgentMessageType];
+
+/** Agent间消息结构 */
+export interface AgentMessage {
+  messageId: string;
+  sessionId: string;
+  timestamp: number;
+  fromAgent: string;
+  toAgent: string;
+  type: AgentMessageTypeEnum;
+  payload: any;
+  metadata: Record<string, any>;
+}
+
+// ==================== WebSocket 状态（新增） ====================
+
+/** WebSocket 连接状态 */
+export type WSConnectionStatus = 'connected' | 'disconnected' | 'reconnecting';
+
+/** WebSocket 事件回调类型 */
+export type WSEventHandler = (event: NegotiationEvent) => void;
+export type WSStatusHandler = (status: WSConnectionStatus) => void;
+
+// ==================== 数据结构 ====================
 
 /** 路线预览 */
 export interface RoutePreview {
@@ -59,6 +105,8 @@ export interface NegotiationEvent {
   utility: Utility;
   routePreview: RoutePreview;
   adjustments?: AdjustmentDetail[]; 
+  /** 【新增】如果是AGENT_MSG类型，携带消息类型 */
+  agentMsgType?: AgentMessageTypeEnum;
   [key: string]: any;
 }
 
@@ -69,6 +117,8 @@ export interface NegotiationProgress {
   activeAgents: string[];
   latestSummary: string;
 }
+
+// ==================== 中文映射 ====================
 
 /** 协商阶段到中文描述的映射 */
 export const PHASE_MAP_CN: Record<NegotiationPhase, string> = {
@@ -88,6 +138,19 @@ export const EVENT_TYPE_CN: Record<NegotiationEventType, string> = {
   ACCEPT: '接受协议',
   REJECT: '拒绝',
   FINALIZED: '最终确定',
+  AGENT_MSG: 'Agent通信', // 【新增】
+};
+
+/** Agent消息类型到中文描述的映射 */
+export const AGENT_MSG_TYPE_CN: Record<string, string> = {
+  coordinate_request: '协调请求',
+  coordinate_response: '协调响应',
+  schedule_proposal: '时间建议',
+  schedule_feedback: '时间反馈',
+  location_share: '位置共享',
+  constraint_notify: '约束通知',
+  preference_query: '偏好查询',
+  preference_response: '偏好响应',
 };
 
 /** 阶段对应进度百分比范围 */

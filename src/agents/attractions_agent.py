@@ -439,8 +439,86 @@ class AttractionsAgent(BaseAgent):
                         "day_index": current_day
                     })
 
-            # 移动到下一批次
+                        # 移动到下一批次
             current_day = end_day + 1
             batch_num += 1
 
         return {"attractions": all_attractions}
+
+    # ==================== 新增：Agent间消息处理 ====================
+
+    async def on_message(self, message: dict) -> Optional[dict]:
+        """
+        处理来自其他Agent的消息
+
+        支持的消息类型：
+        - coordinate_request: 其他Agent请求景点时间协调
+        - schedule_proposal: 其他Agent提出的时间安排建议
+        - location_share: 其他Agent共享的位置信息
+        - preference_query: 其他Agent的偏好查询
+        """
+        msg_type = message.get("type", "unknown")
+        from_agent = message.get("fromAgent", "unknown")
+        payload = message.get("payload", {})
+
+        print(f"\n  🏛️ 景点Agent收到来自 [{from_agent}] 的消息: {msg_type}")
+
+        if msg_type == "coordinate_request":
+            requested_attractions = payload.get("attractions", [])
+            preferred_slot = payload.get("preferred_slot", "morning")
+
+            compatible = []
+            for attr_name in requested_attractions:
+                compatible.append({
+                    "name": attr_name,
+                    "available_slots": ["morning", "afternoon", "evening"],
+                    "recommended_slot": preferred_slot,
+                    "duration": "2小时",
+                })
+
+            return {
+                "status": "ok",
+                "agent_id": self.agent_id,
+                "compatible_attractions": compatible,
+                "suggestion": f"建议将行程安排在{preferred_slot}",
+                "response_type": "coordinate_response",
+            }
+
+        elif msg_type == "schedule_proposal":
+            attraction_name = payload.get("attraction", "")
+            proposed_time = payload.get("start_time", "09:00")
+            proposed_slot = payload.get("slot", "morning")
+
+            print(f"    ⏰ 评估安排: {attraction_name} @ {proposed_time} ({proposed_slot})")
+
+            return {
+                "status": "acknowledged",
+                "agent_id": self.agent_id,
+                "attraction": attraction_name,
+                "proposed_time": proposed_time,
+                "approval": "acceptable",
+                "response_type": "schedule_feedback",
+            }
+
+        elif msg_type == "location_share":
+            print(f"    📍 收到位置分享: {payload.get('name', 'unknown')} @ ({payload.get('lat', '?')}, {payload.get('lng', '?')})")
+            return {
+                "status": "received",
+                "agent_id": self.agent_id,
+                "note": "位置信息已记录，可用于后续路线规划",
+                "response_type": "location_ack",
+            }
+
+        elif msg_type == "preference_query":
+            query = payload.get("query", "")
+            print(f"    ❓ 收到偏好查询: {query}")
+            return {
+                "status": "ok",
+                "agent_id": self.agent_id,
+                "query": query,
+                "response": f"景点Agent已记录查询: {query}",
+                "response_type": "preference_response",
+            }
+
+        else:
+            return await super().on_message(message)

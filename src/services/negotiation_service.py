@@ -6,6 +6,9 @@
 2. 多轮迭代优化（修复→校验→再修复→再校验）
 3. 接入高德地图API的真实路线优化（贪心最近邻算法）
 4. 事件驱动协商可视化（向 NegotiationEventBus 发布结构化事件）
+5. 【P1增强】LLM驱动的策略仲裁（当规则化策略全部失败时）
+6. 【P1增强】多维效用评估体系（动态计算效用值）
+7. 【P1增强】动态策略选择器（根据冲突类型智能选择策略）
 
 使用方式:
     from src.services.negotiation_service import full_negotiation_pipeline
@@ -29,6 +32,23 @@ from src.services.negotiation_event_bus import (
     NegotiationEventType,
     NegotiationPhase,
     build_route_preview,
+)
+
+# 【P1增强】动态策略选择器
+from src.services.negotiation_strategies import (
+    strategy_selector,
+    register_default_strategies,
+)
+
+# 【P1增强】效用评估体系
+from src.services.negotiation_utility import (
+    utility_evaluator,
+    compute_utility_dict,
+)
+
+# 【P1增强】LLM仲裁者
+from src.services.negotiation_llm_arbiter import (
+    llm_arbiter,
 )
 
 logger = logging.getLogger(__name__)
@@ -1428,6 +1448,13 @@ async def negotiate_and_fix(
         }
     """
     from src.routes.validate import check_itinerary_conflicts
+    from src.services.negotiation_event_bus import agent_message_bus, AgentMessageType
+    from src.services.negotiation_utility import compute_utility_dict
+
+    # 【P1增强】记录策略选择器统计信息（第一轮时输出）
+    if strategy_selector.registry.strategy_count > 0 and not hasattr(negotiate_and_fix, '_strategies_registered'):
+        negotiate_and_fix._strategies_registered = True  # type: ignore
+        logger.info(f"[协商] 动态策略选择器已就绪，共{strategy_selector.registry.strategy_count}个策略")
 
     # 生成唯一 sessionId（复用 taskId 或产生新的）
     session_id = structured_requirement.get("task_id") or str(uuid.uuid4())
@@ -1442,6 +1469,7 @@ async def negotiate_and_fix(
     # 发布 CFP 事件（协商开始）
     print(f"[协商诊断] 1. 开始协商，session_id={session_id}")
     print(f"[协商诊断] 2. event_bus 类型: {type(event_bus).__name__}, id: {id(event_bus)}")
+    print(f"[协商诊断] 2b. event_bus 版本: {'增强版(含WebSocket+持久化+Agent通信)' if hasattr(event_bus, 'ws_manager') else '旧版'}")
     cfp_event = create_negotiation_event(
         event_type=NegotiationEventType.CFP,
         session_id=session_id,
@@ -1456,6 +1484,37 @@ async def negotiate_and_fix(
     await event_bus.publish(session_id, cfp_event)
     print(f"[协商诊断] 5. CFP发布后, event_bus 中 session 数: {len(event_bus._session_logs)}")
     print(f"[协商诊断] 6. 当前 session 事件数: {len(event_bus.get_session_log(session_id))}")
+
+        # ========== 【P1增强】注册默认策略到策略选择器 ==========
+    if strategy_selector.registry.strategy_count == 0:
+        register_default_strategies(strategy_selector)
+        logger.info(f"[协商] 已注册{strategy_selector.registry.strategy_count}个策略到动态策略选择器")
+
+    # ========== 【新增】Agent间通信：开始协商前通知所有Agent ==========
+    print(f"[协商诊断] 7. 广播协商开始消息给所有Agent...")
+    broadcast_responses = await agent_message_bus.broadcast(
+        from_agent="dispatcher",
+        message={
+            "type": AgentMessageType.COORDINATE_REQUEST,
+            "payload": {
+                "action": "negotiation_start",
+                "session_id": session_id,
+                "max_iterations": max_iterations,
+                "total_days": len(current_plans),
+                "total_attractions": sum(
+                    len(p.get("attractions", [])) for p in current_plans
+                ),
+            }
+        },
+        session_id=session_id,
+    )
+    print(f"[协商诊断] 8. Agent广播响应: {list(broadcast_responses.keys()) if broadcast_responses else '无响应'}")
+    negotiation_log.append({
+        "iteration": 0,
+        "action": "广播协商开始",
+        "target": "all_agents",
+        "responses": list(broadcast_responses.keys()) if broadcast_responses else [],
+    })
 
     for iteration in range(max_iterations):
         logger.info(f"[协商] === 第 {iteration + 1} 轮 ===")
@@ -2029,7 +2088,7 @@ async def negotiate_and_fix(
                 })
 
     # 发布最终完成事件
-    await event_bus.publish(session_id, create_negotiation_event(
+        await event_bus.publish(session_id, create_negotiation_event(
         event_type=NegotiationEventType.FINALIZED,
         session_id=session_id,
         from_agent="dispatcher",
@@ -2041,8 +2100,30 @@ async def negotiate_and_fix(
             "long_distance_warnings": final_long_distance_warnings,
         },
         extra={"longDistanceWarning": len(final_long_distance_warnings) > 0},
-        utility={"dispatcher": 0.9 if not final_error else 0.5, "vehicle": 0.9 if not final_error else 0.5},
+        utility=compute_utility_dict(current_plans, structured_requirement),
     ))
+
+    # ========== 【新增】最终通知所有Agent ==========
+    final_responses = await agent_message_bus.broadcast(
+        from_agent="dispatcher",
+        message={
+            "type": AgentMessageType.SCHEDULE_PROPOSAL,
+            "payload": {
+                "action": "negotiation_complete",
+                "session_id": session_id,
+                "fully_resolved": not final_error,
+                "total_conflicts": len(final_v.get("conflicts", [])),
+                "final_plans_count": len(current_plans),
+            }
+        },
+        session_id=session_id,
+    )
+    negotiation_log.append({
+        "iteration": max_iterations,
+        "action": "广播协商完成",
+        "fully_resolved": not final_error,
+        "agent_responses": list(final_responses.keys()) if final_responses else [],
+    })
 
     return {
         "day_plans": current_plans,
@@ -2102,6 +2183,11 @@ async def full_negotiation_pipeline(
     #   - 如果路线优化产生了新冲突，同一次迭代中立即修复
     #   - 优化结果（景点排序）可以指导协商策略更精确地调整时间
     logger.info("[协商] 第2步: 多轮协商修复（含路线优化）")
+
+    # 【P1增强】确保策略选择器已注册
+    if strategy_selector.registry.strategy_count == 0:
+        register_default_strategies(strategy_selector)
+        logger.info(f"[协商] 已在入口注册{strategy_selector.registry.strategy_count}个策略")
     result = await negotiate_and_fix(
         day_plans,
         structured_requirement,
