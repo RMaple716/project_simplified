@@ -211,58 +211,43 @@ function createNavigator(mode: string, map: any, panelEl?: HTMLElement | string 
   const normalizedMode = mode === 'riding' ? 'bicycling' : mode;
   const baseOptions: any = { map, hideMarkers: false };
 
-  // 如果传入了 panel 元素，将其 ID 或元素传给规划器，高德会自动填充分步指引
+  // 传入 panel 元素给规划器，高德会自动填充分步指引（所有模式共用）
   if (panelEl) {
     baseOptions.panel = panelEl;
   }
 
   return new Promise((resolve) => {
-    const tryCreate = (attempt: number, maxAttempts: number) => {
-      const AMap = (window as any).AMap;
-      switch (normalizedMode) {
-        case 'walking':
-          AMap.plugin('AMap.Walking', () => {
-            resolve(new AMap.Walking(baseOptions));
-          });
-          break;
-        case 'bicycling':
-          AMap.plugin('AMap.Riding', () => {
-            resolve(new AMap.Riding(baseOptions));
-          });
-          break;
-        case 'transit':
-          // Transfer 插件首次实例化时可能存在内部初始化延迟，增加重试机制
-          baseOptions.city = city || '北京';
-          baseOptions.policy = AMap.TransferPolicy?.LEAST_TIME || 0;
-          const transitOptions = { ...baseOptions };
-          delete transitOptions.hideMarkers;
-          try {
-            const transfer = new AMap.Transfer(transitOptions);
-            // 验证实例是否完整（检查关键方法是否存在）
-            if (typeof transfer.search === 'function') {
-              resolve(transfer);
-            } else {
-              throw new Error('Transfer 实例未完全初始化');
-            }
-          } catch (e) {
-            if (attempt < maxAttempts) {
-              setTimeout(() => tryCreate(attempt + 1, maxAttempts), 500 * (attempt + 1));
-            } else {
-              resolve(new AMap.Transfer(transitOptions));
-            }
-          }
-          break;
-        case 'driving':
-        default:
-          AMap.plugin('AMap.Driving', () => {
-            baseOptions.policy = AMap.DrivingPolicy?.LEAST_TIME || 0;
-            baseOptions.showTraffic = true;
-            resolve(new AMap.Driving(baseOptions));
-          });
-          break;
-      }
-    };
-    tryCreate(0, 3);
+    const AMap = (window as any).AMap;
+    switch (normalizedMode) {
+      case 'walking':
+        AMap.plugin('AMap.Walking', () => {
+          resolve(new AMap.Walking(baseOptions));
+        });
+        break;
+      case 'bicycling':
+        AMap.plugin('AMap.Riding', () => {
+          resolve(new AMap.Riding(baseOptions));
+        });
+        break;
+      case 'transit':
+        // 使用 AMap.plugin 异步加载 Transfer，避免重试机制导致多个实例写入相同 panel
+        baseOptions.city = city || '北京';
+        baseOptions.policy = AMap.TransferPolicy?.LEAST_TIME || 0;
+        const transitOptions = { ...baseOptions };
+        delete transitOptions.hideMarkers;
+        AMap.plugin('AMap.Transfer', () => {
+          resolve(new AMap.Transfer(transitOptions));
+        });
+        break;
+      case 'driving':
+      default:
+        AMap.plugin('AMap.Driving', () => {
+          baseOptions.policy = AMap.DrivingPolicy?.LEAST_TIME || 0;
+          baseOptions.showTraffic = true;
+          resolve(new AMap.Driving(baseOptions));
+        });
+        break;
+    }
   });
 }
 /**
@@ -342,7 +327,7 @@ function addMarkers(map: any, allLocations: LocationPoint[]): any[] {
     });
     markers.push(marker);
   });
-  return markers;
+    return markers;
 }
 
 // ==================== 多路段地图组件（带时间轴+出行方式切换+详细面板） ====================
@@ -752,15 +737,15 @@ const SingleRouteMapModal: React.FC<{
             : navigationData.to,
         };
 
+                // 先在 panel 中清空旧内容（放在 createNavigator 之前，避免高德 SDK 创建时写入初始占位内容）
+        if (panelRef.current) {
+          panelRef.current.innerHTML = '';
+        }
+
         const navigator = await createNavigator(navigationData.type, map, panelRef.current, cityName);
         currentRouteRef.current = navigator;
 
         setRouteSummary(null);
-
-                // 先在 panel 中清空旧内容
-        if (panelRef.current) {
-          panelRef.current.innerHTML = '';
-        }
 
         const { status, result } = await searchRoute(navigator, origin, destination);
 
@@ -963,16 +948,18 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [planned, setPlanned] = useState(false); // 是否已规划路线
 
   const mapRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const currentRouteRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
-  const cancelledRef = useRef(false);
+    const cancelledRef = useRef(false);
 
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [routeSummary, setRouteSummary] = useState<{ distance: string; duration: string; mode: string } | null>(null);
+    const [activeIndex, setActiveIndex] = useState(0);
+  const prevActiveIndexRef = useRef(activeIndex);
+    const [routeSummary, setRouteSummary] = useState<{ distance: string; duration: string; mode: string } | null>(null);
   // 跟踪每个路段当前选的出行方式
     const [segmentModes, setSegmentModes] = useState<string[]>(() =>
     segments.map(() => 'driving' as TransportMode)
@@ -988,7 +975,7 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
     return { ...segments[index], type: segmentModes[index] };
   }, [segments, segmentModes]);
 
-  /** 规划指定路段路线（返回 Promise，确保规划完成） */
+                /** 规划指定路段路线（返回 Promise，确保规划完成） */
     const planRoute = useCallback(async (map: any, segmentIndex: number, panelEl?: HTMLElement | null, overrideMode?: string) => {
     // 如果传入了 overrideMode，直接用它创建 segment，不依赖 state
     const effectiveSegment = overrideMode
@@ -999,18 +986,27 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
     if (currentRouteRef.current) {
       clearRouteOverlays(currentRouteRef.current);
       currentRouteRef.current = null;
-    }
+        }
 
-    // 2) 清空 panel（高德会重新填充）
+    // 2) 创建新 navigator 前先清空 panel，避免高德 SDK 构造时写入的初始内容与 search 完成后的内容叠加
     if (panelEl) {
       panelEl.innerHTML = '';
     }
 
-        // 3) 创建新规划器（createNavigator 现在是 async，需要 await）
     const { origin, destination } = getOriginDest(effectiveSegment);
     const segCity = effectiveSegment.cityName || cityName;
+    
+    // 传 panel 给 createNavigator，高德 SDK 自动渲染路线详情到 panel
     const navigator = await createNavigator(effectiveSegment.type, map, panelEl, segCity);
     currentRouteRef.current = navigator;
+
+    // 3) 创建后再次清空：高德 Transfer/Driving 等构造时可能同步写入初始占位内容到 panel
+    //    注意：此时清空会导致 search 完成前 panel 为空白，但 search 完成后高德会重新填充完整内容
+    //    这样可以避免"初始占位内容→完整内容"的两步闪烁
+    //    唯一的一次填充就是 search 完成的这次
+    if (panelEl) {
+      panelEl.innerHTML = '';
+    }
 
     setRouteSummary(null);
     setLoadError(null);
@@ -1018,35 +1014,42 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
         // 4) 搜索路线（通过 QPS 限流器）
     const { status, result } = await searchRoute(navigator, origin, destination, { cancelledRef });
 
-    if (cancelledRef.current) return;
+        if (cancelledRef.current) return;
 
-    if (status === 'complete') {
-      map.setFitView();
-      // 公交换乘（Transfer）的返回结果是 plans，而非 routes
-      const isTransit = effectiveSegment.type === 'transit';
-      if (isTransit && result.plans && result.plans[0]) {
-        const plan = result.plans[0];
-        setRouteSummary({
-          distance: formatDistance(plan.distance),
-          duration: formatTime(plan.time),
-          mode: getTransportTypeName(effectiveSegment.type),
-        });
-      } else if (!isTransit && result.routes && result.routes[0]) {
-        const route = result.routes[0];
-        setRouteSummary({
-          distance: formatDistance(route.distance),
-          duration: formatTime(route.time),
-          mode: getTransportTypeName(effectiveSegment.type),
-        });
-      }
-    } else {
-      const errMsg = result?.info || '路线规划失败，请检查地址';
-      setLoadError(errMsg);
-      if (panelEl) {
-        panelEl.innerHTML = `<div style="padding:12px 16px;color:#ff4d4f;text-align:center;">❌ ${errMsg}</div>`;
-      }
-    }
-  }, [segments, getEffectiveSegment]);
+        if (status === 'complete') {
+          map.setFitView();
+          // 公交换乘（Transfer）的返回结果是 plans，而非 routes
+          const isTransit = effectiveSegment.type === 'transit';
+          if (isTransit && result.plans && result.plans[0]) {
+            const plan = result.plans[0];
+            setRouteSummary({
+              distance: formatDistance(plan.distance),
+              duration: formatTime(plan.time),
+              mode: getTransportTypeName(effectiveSegment.type),
+            });
+          } else if (!isTransit && result.routes && result.routes[0]) {
+            const route = result.routes[0];
+            setRouteSummary({
+              distance: formatDistance(route.distance),
+              duration: formatTime(route.time),
+              mode: getTransportTypeName(effectiveSegment.type),
+            });
+          } else if (result.info) {
+            // 高德返回了 info 信息但没有 plan/route（如某些边界情况）
+            setLoadError(result.info);
+          }
+        } else if (status === 'no_data') {
+          setLoadError('未找到合适的路线方案，请尝试其他出行方式');
+        } else {
+          const errMsg = result?.info || '路线规划失败，请检查地址';
+          setLoadError(errMsg);
+        }
+        }, [segments, getEffectiveSegment]);
+
+  // 用 ref 存储 planRoute，避免 initMap 和 handleModeChange 因 planRoute 变化而重新创建
+  const planRouteRef = useRef(planRoute);
+  useEffect(() => { planRouteRef.current = planRoute; }, [planRoute]);
+
   const handleModeChange = useCallback(async (newMode: string) => {
       if (!mapInstanceRef.current) return;
 
@@ -1086,25 +1089,24 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
         }
 
         const panelEl = panelRef.current;
-        await planRoute(map, activeIndex, panelEl, newMode);
+        await planRouteRef.current(map, activeIndex, panelEl, newMode);
       } catch (e) {
         setLoadError(`地图加载失败: ${(e as Error).message}`);
       }
       setLoading(false);
-    }, [activeIndex, planRoute, allLocations]);
+    }, [activeIndex, allLocations]);
 
 
   const segmentModesRef = useRef(segmentModes);
   useEffect(() => { segmentModesRef.current = segmentModes; }, [segmentModes]);
 
-  /** 初始化地图 + 只规划当前选中路段 */
+    /** 初始化地图（只创建地图实例，不规划路线） */
   const initMap = useCallback(async () => {
     if (!mapRef.current || segments.length === 0) return;
     let localCancelled = false;
     cancelledRef.current = false;
     setLoading(true);
     setLoadError(null);
-    setActiveIndex(0);
 
     try {
       await loadAMapSDK();
@@ -1137,19 +1139,12 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
         markersRef.current = addMarkers(map, allLocations);
       }
 
-      // 规划第一个路段
-      const latestModes = segmentModesRef.current;
-      const firstSegment = { ...segments[0], type: latestModes[0] || segments[0].type };
-      const { origin: firstOrigin, destination: firstDest } = getOriginDest(firstSegment);
-      const firstCity = latestModes[0] === 'transit' ? (cityName || segments[0].cityName) : undefined;
-      const firstNavigator = await createNavigator(firstSegment.type, map, panelRef.current, firstCity);
-      currentRouteRef.current = firstNavigator;
-      await searchRoute(firstNavigator, firstOrigin, firstDest, { cancelledRef });
-      map.setFitView();
-
       if (!localCancelled) {
         setLoading(false);
         setMapLoaded(true);
+        // 重置规划状态（地图初始化后需要重新规划）
+        setPlanned(false);
+        setRouteSummary(null);
       }
     } catch (error) {
       if (!localCancelled) {
@@ -1157,22 +1152,26 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
         setLoadError(`地图加载失败: ${(error as Error).message}`);
       }
     }
-  }, [segments, allLocations]);
+    }, [segments, allLocations]);
 
-  // 切换路段时重新规划
+    // 切换路段时重新规划（仅当 activeIndex 确实改变且已规划过时触发）
   useEffect(() => {
-    if (!mapInstanceRef.current || !showMap || segments.length === 0) return;
+    // 跳过首次加载和未规划状态
+    if (!mapInstanceRef.current || !showMap || segments.length === 0 || !planned) return;
+    // 仅在 activeIndex 真正变化时才重新规划
+    if (activeIndex === prevActiveIndexRef.current) return;
+    prevActiveIndexRef.current = activeIndex;
+
     const map = mapInstanceRef.current;
     const panelEl = panelRef.current;
     const doPlan = async () => {
       setLoading(true);
-      await planRoute(map, activeIndex, panelEl);
+      await planRouteRef.current(map, activeIndex, panelEl);
       setLoading(false);
     };
     doPlan();
-    // 注意：不能把 planRoute 作为依赖，否则循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndex, showMap, segments.length]);
+  }, [activeIndex, showMap, segments.length, planned]);
 
   // 点击按钮处理
   const handleToggleMap = () => {
@@ -1217,7 +1216,7 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
     };
   }, []);
 
-  if (segments.length === 0) {
+    if (segments.length === 0) {
     return null;
   }
 
@@ -1233,16 +1232,22 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
         </Space>
       }
       extra={
-        <Button
-          type="primary"
-          size="small"
-          icon={!showMap && !loading ? <AimOutlined /> : undefined}
-          loading={loading}
-          disabled={loading}
-          onClick={handleToggleMap}
-        >
-          {loading ? '⏳ 正在加载路线...' : showMap ? '🗺️ 隐藏路线' : '🗺️ 显示路线'}
-        </Button>
+        !showMap ? (
+          <Button
+            type="primary"
+            size="small"
+            icon={<AimOutlined />}
+            loading={loading}
+            disabled={loading}
+            onClick={handleToggleMap}
+          >
+            {loading ? '⏳ 正在加载...' : '🗺️ 显示路线'}
+          </Button>
+        ) : (
+          <Space>
+            <Button size="small" onClick={handleToggleMap}>🗺️ 隐藏路线</Button>
+          </Space>
+        )
       }
     >
       {/* 地图未显示时展示文字提示 */}
@@ -1259,7 +1264,7 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
       {/* 以下内容只有 showMap 为 true 时才渲染 */}
       {showMap && (
         <>
-          {/* 路段选择时间轴 */}
+          {/* 路段选择 + 出行方式切换 + 摘要信息 — 保持原有布局 */}
           {segments.length > 1 && (
             <div style={{
               marginBottom: 12, padding: '8px 12px', background: '#fafafa',
@@ -1340,7 +1345,7 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
               style={{ marginBottom: 8 }} closable onClose={() => setLoadError(null)} />
           )}
 
-          {/* 地图区域 — 始终显示地图 div，不因 loadError 隐藏 */}
+          {/* 地图区域 — panel 浮在地图右下角 */}
           <div style={{ position: 'relative', minHeight: '200px' }}>
             {loading && (
               <div style={{
@@ -1356,17 +1361,53 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
               visibility: loading ? 'hidden' : 'visible',
               position: 'relative', zIndex: 0,
             }} />
-          </div>
 
-          {/* 详细导航面板 — 没有初始占位文字 */}
-          <div
-            ref={panelRef}
-            id="route-panel-content"
-            style={{
-              marginTop: 12, maxHeight: '300px', overflowY: 'auto',
-              background: '#fff', borderRadius: 8, border: '1px solid #f0f0f0', fontSize: 13,
-            }}
-          />
+            {/* 未规划时显示"规划路线"按钮 — 浮在地图右下角 */}
+            {!planned && !loading && (
+              <div style={{
+                position: 'absolute', bottom: 20, right: 20, zIndex: 100,
+              }}>
+                <Button
+                  type="primary"
+                  size="large"
+                  icon={<AimOutlined />}
+                  onClick={async () => {
+                    setPlanned(true);
+                    setLoading(true);
+                    try {
+                      await planRouteRef.current(mapInstanceRef.current, activeIndex, panelRef.current);
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                  style={{
+                    borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                    fontSize: 14, padding: '0 20px', height: 42,
+                  }}
+                >
+                  规划路线
+                </Button>
+              </div>
+            )}
+
+            {/* 路线详情面板 — 浮在地图右下角，覆盖在地图上 */}
+            <div
+              ref={panelRef}
+              id="route-panel-content"
+              style={{
+                position: 'absolute', bottom: 20, right: 20, zIndex: 100,
+                maxHeight: '350px', overflowY: 'auto',
+                width: '100%', maxWidth: '380px',
+                background: 'rgba(255,255,255,0.95)',
+                backdropFilter: 'blur(8px)',
+                borderRadius: 16,
+                border: '1px solid rgba(255,255,255,0.3)',
+                fontSize: 13,
+                boxShadow: '0 8px 20px rgba(0,0,0,0.15)',
+                display: planned ? 'block' : 'none',
+              }}
+            />
+          </div>
         </>
       )}
     </Card>
