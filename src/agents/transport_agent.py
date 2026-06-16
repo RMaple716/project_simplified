@@ -16,7 +16,18 @@ class TransportAgent(BaseAgent):
             name="交通规划助手",
             description="为用户提供交通方案推荐"
         )
+        self._async_init_done = False
+        
 
+    async def async_init(self):
+        """异步初始化：注册消息处理器，启用Agent间通信"""
+        if self._async_init_done:
+            return
+        await self.register_message_handlers()
+        self._async_init_done = True
+        print(f"交通Agent ({self.agent_id}) 消息处理器已注册")    
+        
+        
     def get_capabilities(self) -> List[str]:
         return [
             "交通方案推荐",

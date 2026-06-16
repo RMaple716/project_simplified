@@ -377,6 +377,10 @@ CONFLICT_STRATEGY_MAP = {
         "strategy_time_shift",
         "strategy_compress_duration",
     ],
+    "unreasonable_meal_time": [
+        "strategy_time_shift",
+        "strategy_swap_time_slot",
+    ],
 }
 
 

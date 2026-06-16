@@ -540,6 +540,86 @@ def check_itinerary_conflicts(day_plans: List[Dict[str, Any]], structured_requir
             total_cost += attraction.get("ticket_price", 0) if isinstance(attraction.get("ticket_price"), (int, float)) else 0
         
         # 添加餐饮活动
+        
+        # 【增强】检查餐饮活动是否在合理时间段
+        import datetime as _dt
+        for meal in day_plan.get("meals", []):
+            if not isinstance(meal, dict):
+                continue
+            meal_name = meal.get("name", "用餐")
+            meal_start_str = meal.get("start_time") or meal.get("time") or meal.get("meal_time", "中午")
+            meal_start_m = parse_time_to_minutes(meal_start_str)
+            meal_dur_str = meal.get("duration", "1小时")
+            meal_dur_m = parse_duration_to_minutes(meal_dur_str)
+            meal_end_m = meal_start_m + meal_dur_m
+            
+            # 推断餐别
+            meal_type = (meal.get("meal_type") or "").lower()
+            meal_time_field = (meal.get("meal_time") or "").lower()
+            meal_name_lower = (meal.get("name") or "").lower()
+            
+            # 合理时间范围（分钟）
+            breakfast_range = (420, 540)    # 07:00-09:00
+            lunch_range = (690, 810)        # 11:30-13:30
+            dinner_range = (1020, 1170)     # 17:00-19:30
+            
+            # 判断是哪一餐
+            is_breakfast = any(kw in meal_type or kw in meal_time_field or kw in meal_name_lower 
+                              for kw in ["breakfast", "早餐", "早上", "早"])
+            is_lunch = any(kw in meal_type or kw in meal_time_field or kw in meal_name_lower 
+                          for kw in ["lunch", "午餐", "中午", "中餐"])
+            is_dinner = any(kw in meal_type or kw in meal_time_field or kw in meal_name_lower 
+                           for kw in ["dinner", "晚餐", "晚上", "晚"])
+            
+            # 如果判断不出，从时间推断
+            if not any([is_breakfast, is_lunch, is_dinner]):
+                if 360 <= meal_start_m < 600:
+                    is_breakfast = True
+                elif 660 <= meal_start_m < 870:
+                    is_lunch = True
+                elif 990 <= meal_start_m < 1200:
+                    is_dinner = True
+            
+            if is_breakfast:
+                if meal_start_m < breakfast_range[0] or meal_end_m > breakfast_range[1]:
+                    all_conflicts.append({
+                        "type": "unreasonable_meal_time",
+                        "description": f"早餐'{meal_name}' 安排在 {format_minutes(meal_start_m)}-{format_minutes(meal_end_m)}，"
+                                      f"不在合理早餐时间段（{format_minutes(breakfast_range[0])}-{format_minutes(breakfast_range[1])}）内",
+                        "severity": "warning",
+                        "day": day_num,
+                        "date": date,
+                        "activities": [meal_name],
+                        "meal_type": "breakfast",
+                        "expected_range": f"{format_minutes(breakfast_range[0])}-{format_minutes(breakfast_range[1])}",
+                    })
+            elif is_lunch:
+                if meal_start_m < lunch_range[0] or meal_end_m > lunch_range[1]:
+                    all_conflicts.append({
+                        "type": "unreasonable_meal_time",
+                        "description": f"午餐'{meal_name}' 安排在 {format_minutes(meal_start_m)}-{format_minutes(meal_end_m)}，"
+                                      f"不在合理午餐时间段（{format_minutes(lunch_range[0])}-{format_minutes(lunch_range[1])}）内",
+                        "severity": "warning",
+                        "day": day_num,
+                        "date": date,
+                        "activities": [meal_name],
+                        "meal_type": "lunch",
+                        "expected_range": f"{format_minutes(lunch_range[0])}-{format_minutes(lunch_range[1])}",
+                    })
+            elif is_dinner:
+                if meal_start_m < dinner_range[0] or meal_end_m > dinner_range[1]:
+                    all_conflicts.append({
+                        "type": "unreasonable_meal_time",
+                        "description": f"晚餐'{meal_name}' 安排在 {format_minutes(meal_start_m)}-{format_minutes(meal_end_m)}，"
+                                      f"不在合理晚餐时间段（{format_minutes(dinner_range[0])}-{format_minutes(dinner_range[1])}）内",
+                        "severity": "warning",
+                        "day": day_num,
+                        "date": date,
+                        "activities": [meal_name],
+                        "meal_type": "dinner",
+                        "expected_range": f"{format_minutes(dinner_range[0])}-{format_minutes(dinner_range[1])}",
+                    })
+    
         for meal in day_plan.get("meals", []):
             if not isinstance(meal, dict):
                 continue
@@ -611,11 +691,14 @@ def check_itinerary_conflicts(day_plans: List[Dict[str, Any]], structured_requir
             lat2, lng2 = loc_b.get("lat"), loc_b.get("lng")
 
             if None not in (lat1, lng1, lat2, lng2):
+                # 类型安全转换（Pylance无法从None检查推断类型收窄）
+                lat1_f, lng1_f = float(lat1 or 0), float(lng1 or 0)
+                lat2_f, lng2_f = float(lat2 or 0), float(lng2 or 0)
                 import math
                 R = 6371
-                dlat = math.radians(float(lat2) - float(lat1))
-                dlng = math.radians(float(lng2) - float(lng1))
-                a_ = math.sin(dlat/2)**2 + math.cos(math.radians(float(lat1))) * math.cos(math.radians(float(lat2))) * math.sin(dlng/2)**2
+                dlat = math.radians(lat2_f - lat1_f)
+                dlng = math.radians(lng2_f - lng1_f)
+                a_ = math.sin(dlat/2)**2 + math.cos(math.radians(lat1_f)) * math.cos(math.radians(lat2_f)) * math.sin(dlng/2)**2
                 c_ = 2 * math.atan2(math.sqrt(a_), math.sqrt(1-a_))
                 dist_km = R * c_
 

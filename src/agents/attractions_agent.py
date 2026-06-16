@@ -17,6 +17,15 @@ class AttractionsAgent(BaseAgent):
             description="基于用户偏好推荐合适的旅游景点"
         )
         self.weather_service = weather_service
+        self._async_init_done = False
+
+    async def async_init(self):
+        """异步初始化：注册消息处理器，启用Agent间通信"""
+        if self._async_init_done:
+            return
+        await self.register_message_handlers()
+        self._async_init_done = True
+        print(f" 景点Agent ({self.agent_id}) 消息处理器已注册")
 
     def get_capabilities(self) -> List[str]:
         return [
