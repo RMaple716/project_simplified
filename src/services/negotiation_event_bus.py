@@ -48,6 +48,13 @@ class NegotiationEventType:
     REJECT = "REJECT"       # 拒绝
     FINALIZED = "FINALIZED" # 最终确定
     AGENT_MSG = "AGENT_MSG" # 【新增】Agent间消息
+    # ===== 任务执行进度事件 =====
+    TASK_STARTED = "TASK_STARTED"                # 批次任务开始
+    SUB_TASK_STARTED = "SUB_TASK_STARTED"         # 子任务开始执行
+    SUB_TASK_COMPLETED = "SUB_TASK_COMPLETED"     # 子任务完成
+    SUB_TASK_FAILED = "SUB_TASK_FAILED"           # 子任务失败
+    NEGOTIATION_STARTED = "NEGOTIATION_STARTED"   # 协商阶段开始
+    ITINERARY_CREATED = "ITINERARY_CREATED"       # 行程已创建
 
 
 class NegotiationPhase:
@@ -115,11 +122,12 @@ def create_negotiation_event(
         "routePreview": route_preview or {},
     }
 
-    # 将 adjustments 从 proposal 提升到事件顶层（前端需要）
+        # 将 adjustments 从 proposal 提升到事件顶层（前端需要）
     if proposal and "adjustments" in proposal:
         event["adjustments"] = proposal.pop("adjustments")
 
     if extra:
+        event["extra"] = extra
         event.update(extra)
     return event
 
@@ -226,6 +234,9 @@ class AgentMessageBus:
         self._handlers: Dict[str, List[Callable]] = {}
         # session_id -> [messages]
         self._message_history: Dict[str, List[Dict[str, Any]]] = {}
+        # 【P2】Agent共享信息池 — 所有Agent可读写
+        # session_id -> {"shared_context": {key: value}, ...}
+        self._shared_contexts: Dict[str, Dict[str, Any]] = {}
         logger.info("[Agent消息通道] 初始化完成")
 
     def register_handler(self, agent_id: str, handler: Callable) -> None:
@@ -328,148 +339,380 @@ class AgentMessageBus:
         return self._message_history.get(session_id, [])
 
     def clear_session(self, session_id: str) -> None:
-        """清空指定会话的消息历史"""
+        """清空指定会话的消息历史（含共享上下文）"""
         if session_id in self._message_history:
             del self._message_history[session_id]
+        self._shared_contexts.pop(session_id, None)
+
+    # ==================== 【P2】共享信息池 ====================
+
+    def get_shared_context(self, session_id: str) -> Dict[str, Any]:
+        """
+        获取指定会话的共享上下文（读写均通过此对象引用）
+
+        Args:
+            session_id: 会话ID
+
+        Returns:
+            共享上下文字典（空字典表示未初始化）
+        """
+        if session_id not in self._shared_contexts:
+            self._shared_contexts[session_id] = {}
+        return self._shared_contexts[session_id]
+
+    def update_shared_context(self, session_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        更新指定会话的共享上下文
+
+        Args:
+            session_id: 会话ID
+            updates: 要更新的键值对
+
+        Returns:
+            更新后的共享上下文
+        """
+        ctx = self.get_shared_context(session_id)
+        ctx.update(updates)
+        logger.info(f"[Agent消息通道] session={session_id}: 共享上下文已更新, keys={list(updates.keys())}")
+        return ctx
+
+    def get_shared_context_value(self, session_id: str, key: str, default: Any = None) -> Any:
+        """
+        从共享上下文获取指定键的值
+
+        Args:
+            session_id: 会话ID
+            key: 键名
+            default: 默认值
+
+        Returns:
+            键对应的值，不存在返回default
+        """
+        ctx = self.get_shared_context(session_id)
+        return ctx.get(key, default)
+
+    def clear_shared_context(self, session_id: str) -> None:
+        """清空指定会话的共享上下文"""
+        if session_id in self._shared_contexts:
+            del self._shared_contexts[session_id]
+            logger.info(f"[Agent消息通道] session={session_id}: 共享上下文已清空")
+
+    # ==================== 【改造方案 4.1】Agent间信息共享 ====================
+
+    async def share_agent_info(
+        self,
+        agent_id: str,
+        session_id: str,
+        info_type: str,
+        info_data: dict,
+    ) -> None:
+        """
+        Agent 向共享信息池写入领域知识（改造方案 4.1.1）
+
+        其他 Agent 可以通过 get_shared_agent_info() 读取。
+        写入时会自动通知已订阅该信息类型的所有 Agent。
+
+        Args:
+            agent_id: 发送 Agent 的 ID
+            session_id: 会话ID
+            info_type: 信息类型
+                "attractions_info" | "transport_info" | "food_info" | "hotel_info"
+            info_data: 领域知识数据
+        """
+        import time
+        ctx = self.get_shared_context(session_id)
+        if "agent_shared_info" not in ctx:
+            ctx["agent_shared_info"] = {}
+        ctx["agent_shared_info"][agent_id] = {
+            "type": info_type,
+            "data": info_data,
+            "timestamp": int(time.time() * 1000),
+        }
+
+        # 通知其他 Agent（可选）
+        await self.broadcast(
+            from_agent=agent_id,
+            message={
+                "type": AgentMessageType.LOCATION_SHARE,
+                "payload": {
+                    "action": "info_shared",
+                    "info_type": info_type,
+                    "summary": f"{agent_id} shared {info_type} info",
+                }
+            },
+            session_id=session_id,
+        )
+
+    def get_shared_agent_info(
+        self,
+        session_id: str,
+        agent_id: Optional[str] = None,
+        info_type: Optional[str] = None,
+    ) -> dict:
+        """
+        从共享信息池读取 Agent 的领域信息（改造方案 4.1.1）
+
+        Args:
+            session_id: 会话ID
+            agent_id: Agent ID，None 返回所有 Agent 的信息
+            info_type: 信息类型过滤，None 不过滤
+
+        Returns:
+            Agent 共享信息字典
+        """
+        ctx = self.get_shared_context(session_id)
+        all_info = ctx.get("agent_shared_info", {})
+
+        if agent_id:
+            return all_info.get(agent_id, {})
+
+        if info_type:
+            return {
+                aid: info for aid, info in all_info.items()
+                if info.get("type") == info_type
+            }
+
+        return all_info
 
 
-# ==================== 持久化服务（新增） ====================
+# ==================== 持久化服务 ====================
 
 class EventPersistenceService:
     """
     事件持久化服务
 
-    将协商事件和Agent消息持久化到数据库，防止服务重启丢失。
-    同时支持按session_id查询历史事件。
+    将协商事件持久化到 negotiation_event_logs 表。
+    支持单个事件保存、批量保存、按 session_id/task_id 查询历史事件。
+    所有数据库操作都 try/except 包裹，失败不影响主协商流程。
     """
 
     def __init__(self):
         self._enabled = False
-        self._db_session_factory = None
+        self._batch_mode = False
+        self._buffer = []
 
-    def enable(self, db_session_factory) -> None:
-        """启用持久化（注入数据库会话工厂）"""
+    def enable(self, batch_mode: bool = False) -> None:
+        """启用持久化"""
         self._enabled = True
-        self._db_session_factory = db_session_factory
-        logger.info("[事件持久化] 已启用")
+        self._batch_mode = batch_mode
+        logger.info(f"[事件持久化] 已启用 (batch_mode={batch_mode})")
 
     def disable(self) -> None:
         """禁用持久化"""
         self._enabled = False
-        self._db_session_factory = None
+        self._buffer.clear()
         logger.info("[事件持久化] 已禁用")
 
-    async def save_event(self, session_id: str, event: Dict[str, Any]) -> bool:
-        """
-        保存单个事件到数据库
-
-        Args:
-            session_id: 会话ID
-            event: 事件字典
-
-        Returns:
-            是否保存成功
-        """
-        if not self._enabled:
-            return False
+    async def _persist_one(self, session_id: str, event: dict) -> bool:
+        """将单个事件写入 negotiation_event_logs 表"""
         try:
             from src.database import SessionLocal
-            from src.models.db_models import Itinerary
+            from src.models.db_models import NegotiationEventLog
 
             db = SessionLocal()
             try:
-                # 查找或创建行程记录来关联事件
-                itinerary = db.query(Itinerary).filter(
-                    Itinerary.itinerary_id == session_id
-                ).first()
-
-                if itinerary:
-                    # 将事件存入 day_plans 的元数据中
-                    day_plans = itinerary.day_plans or []
-                    if isinstance(day_plans, list) and len(day_plans) > 0:
-                        if "negotiation_events" not in day_plans[0]:
-                            day_plans[0]["negotiation_events"] = []
-                        day_plans[0]["negotiation_events"].append(event)
-                        itinerary.day_plans = day_plans  # type: ignore
-                        db.commit()
-                        return True
-                    # day_plans 为空，无法持久化
-                    logger.debug(f"[事件持久化] session={session_id} day_plans为空，跳过持久化")
-                    return False
-                else:
-                    # 如果行程不存在，尝试通过 NegotiationEventLog 表保存
-                    # 使用 raw SQL 或创建新的日志条目
-                    logger.debug(f"[事件持久化] session={session_id} 行程不存在，跳过持久化")
-                    return False
+                extra_fields = {k: v for k, v in event.items()
+                                if k not in ("eventId", "sessionId", "timestamp", "eventType",
+                                             "fromAgent", "toAgent", "phase", "proposal", "utility",
+                                             "routePreview")}
+                log_entry = NegotiationEventLog(
+                    session_id=session_id,
+                    task_id=event.get("task_id") or event.get("sessionId"),
+                    event_type=event.get("eventType", ""),
+                    phase=event.get("phase", ""),
+                    from_agent=event.get("fromAgent"),
+                    to_agent=event.get("toAgent"),
+                    proposal=json.dumps(event.get("proposal", {}), ensure_ascii=False),
+                    utility=json.dumps(event.get("utility", {}), ensure_ascii=False),
+                    extra=json.dumps(extra_fields, ensure_ascii=False),
+                )
+                db.add(log_entry)
+                db.commit()
+                return True
             finally:
                 db.close()
         except Exception as e:
-            logger.warning(f"[事件持久化] 保存失败: {e}")
+            logger.warning(f"[事件持久化] 保存失败（非致命）: {e}")
             return False
 
-    async def save_events_batch(self, session_id: str, events: List[Dict[str, Any]]) -> bool:
-        """
-        批量保存事件到数据库
+    async def save_event(self, session_id: str, event: dict) -> bool:
+        """保存单个事件到数据库"""
+        if not self._enabled:
+            return False
+        if self._batch_mode:
+            self._buffer.append((session_id, event))
+            return True
+        return await self._persist_one(session_id, event)
 
-        Args:
-            session_id: 会话ID
-            events: 事件列表
-        """
+    async def flush_buffer(self) -> int:
+        """将缓冲区中的事件批量写入数据库"""
+        if not self._buffer:
+            return 0
+        batch = self._buffer[:]
+        self._buffer = []
+        success_count = 0
+        try:
+            from src.database import SessionLocal
+            from src.models.db_models import NegotiationEventLog
+
+            db = SessionLocal()
+            try:
+                entries = []
+                for sid, evt in batch:
+                    extra_fields = {k: v for k, v in evt.items()
+                                    if k not in ("eventId", "sessionId", "timestamp", "eventType",
+                                                 "fromAgent", "toAgent", "phase", "proposal", "utility",
+                                                 "routePreview")}
+                    entries.append(NegotiationEventLog(
+                        session_id=sid,
+                        task_id=evt.get("task_id") or evt.get("sessionId"),
+                        event_type=evt.get("eventType", ""),
+                        phase=evt.get("phase", ""),
+                        from_agent=evt.get("fromAgent"),
+                        to_agent=evt.get("toAgent"),
+                        proposal=json.dumps(evt.get("proposal", {}), ensure_ascii=False),
+                        utility=json.dumps(evt.get("utility", {}), ensure_ascii=False),
+                        extra=json.dumps(extra_fields, ensure_ascii=False),
+                    ))
+                db.add_all(entries)
+                db.commit()
+                success_count = len(entries)
+                logger.info(f"[事件持久化] 批量写入成功: {success_count} 条")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[事件持久化] 批量写入失败（非致命）: {e}")
+        return success_count
+
+    async def save_events_batch(self, session_id: str, events: list) -> bool:
+        """批量保存事件（兼容旧接口）"""
         if not self._enabled or not events:
             return False
         try:
             from src.database import SessionLocal
-            from src.models.db_models import Itinerary
+            from src.models.db_models import NegotiationEventLog
 
             db = SessionLocal()
             try:
-                itinerary = db.query(Itinerary).filter(
-                    Itinerary.itinerary_id == session_id
-                ).first()
-
-                if itinerary:
-                    day_plans = itinerary.day_plans or []
-                    if isinstance(day_plans, list) and len(day_plans) > 0:
-                        existing = day_plans[0].get("negotiation_events", [])
-                        existing.extend(events)
-                        day_plans[0]["negotiation_events"] = existing
-                        itinerary.day_plans = day_plans  # type: ignore
-                        db.commit()
-                        return True
-                return False
+                entries = []
+                for evt in events:
+                    entries.append(NegotiationEventLog(
+                        session_id=session_id,
+                        task_id=evt.get("task_id") or evt.get("sessionId"),
+                        event_type=evt.get("eventType", ""),
+                        phase=evt.get("phase", ""),
+                        from_agent=evt.get("fromAgent"),
+                        to_agent=evt.get("toAgent"),
+                        proposal=json.dumps(evt.get("proposal", {}), ensure_ascii=False),
+                        utility=json.dumps(evt.get("utility", {}), ensure_ascii=False),
+                        extra=json.dumps(evt.get("extra", {}), ensure_ascii=False),
+                    ))
+                db.add_all(entries)
+                db.commit()
+                return True
             finally:
                 db.close()
         except Exception as e:
             logger.warning(f"[事件持久化] 批量保存失败: {e}")
             return False
 
-    async def get_events(self, session_id: str) -> List[Dict[str, Any]]:
-        """从数据库获取指定会话的事件列表"""
+    async def get_events(self, session_id: str) -> list:
+        """从数据库获取指定会话的事件列表（按时间排序）"""
         if not self._enabled:
             return []
         try:
             from src.database import SessionLocal
-            from src.models.db_models import Itinerary
+            from src.models.db_models import NegotiationEventLog
+            from sqlalchemy import select
 
             db = SessionLocal()
             try:
-                itinerary = db.query(Itinerary).filter(
-                    Itinerary.itinerary_id == session_id
-                ).first()
-
-                if itinerary is not None and itinerary.day_plans is not None:
-                    day_plans = itinerary.day_plans
-                    if isinstance(day_plans, list) and len(day_plans) > 0:
-                        return day_plans[0].get("negotiation_events", [])
-                return []
+                stmt = select(NegotiationEventLog).where(
+                    NegotiationEventLog.session_id == session_id
+                ).order_by(NegotiationEventLog.created_at)
+                rows = db.execute(stmt).scalars().all()
+                return [r.to_dict() for r in rows]
             finally:
                 db.close()
         except Exception as e:
             logger.warning(f"[事件持久化] 读取失败: {e}")
             return []
 
+    async def get_events_by_task(self, task_id: str) -> list:
+        """按 task_id 获取事件"""
+        if not self._enabled:
+            return []
+        try:
+            from src.database import SessionLocal
+            from src.models.db_models import NegotiationEventLog
+            from sqlalchemy import select
 
-# ==================== 增强版事件总线 ====================
+            db = SessionLocal()
+            try:
+                stmt = select(NegotiationEventLog).where(
+                    NegotiationEventLog.task_id == task_id
+                ).order_by(NegotiationEventLog.created_at)
+                rows = db.execute(stmt).scalars().all()
+                return [r.to_dict() for r in rows]
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[事件持久化] 按task_id读取失败: {e}")
+            return []
+
+    @property
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def buffer_size(self) -> int:
+        return len(self._buffer)
+
+
+# ==================== 缓冲持久化器（批量写入优化） ====================
+
+class BufferedEventPersister:
+    """
+    带缓冲的事件持久化器
+
+    将事件先积累到缓冲区，达到 batch_size 或 flush_interval 时再批量写入。
+    减少数据库写入压力。
+    """
+
+    def __init__(self, persistence: EventPersistenceService,
+                 flush_interval: float = 5.0, batch_size: int = 20):
+        """
+        Args:
+            persistence: EventPersistenceService 实例
+            flush_interval: 最大缓冲时间（秒）
+            batch_size: 触发刷入的批量大小
+        """
+        self.persistence = persistence
+        self.flush_interval = flush_interval
+        self.batch_size = batch_size
+        self._timer = None
+        self._loop = None
+        logger.info(f"[缓冲持久化] 初始化: flush_interval={flush_interval}s, batch_size={batch_size}")
+
+    async def add(self, session_id: str, event: dict) -> None:
+        """添加事件到缓冲区"""
+        self.persistence._buffer.append((session_id, event))
+        buffer_size = len(self.persistence._buffer)
+        if buffer_size >= self.batch_size:
+            await self.flush()
+        elif self._timer is None:
+            self._loop = asyncio.get_event_loop()
+            self._timer = self._loop.call_later(
+                self.flush_interval,
+                lambda: asyncio.ensure_future(self.flush())
+            )
+
+    async def flush(self) -> int:
+        """强制刷入缓冲区"""
+        if self._timer:
+            self._timer.cancel()
+            self._timer = None
+        return await self.persistence.flush_buffer()
 
 class NegotiationEventBus:
     """
@@ -523,20 +766,31 @@ class NegotiationEventBus:
         # 【新增】TTL清理任务
         self._cleanup_task: Optional[asyncio.Task] = None
         
+        # 【新增】缓冲持久化器（可选）
+        self._buffered_persister = None
+        
         logger.info("[事件总线] 增强版初始化完成")
 
     # ==================== 持久化控制 ====================
 
-    def enable_persistence(self):
-        """启用数据库持久化"""
+    def enable_persistence(self, batch_mode: bool = False):
+        """
+        启用数据库持久化
+
+        Args:
+            batch_mode: 是否启用批量写入模式
+        """
         self._persistence_enabled = True
-        self.persistence.enable(None)  # persistence内部会自行创建session
-        logger.info("[事件总线] 已启用持久化")
+        self.persistence.enable(batch_mode=batch_mode)
+        if batch_mode:
+            self._buffered_persister = BufferedEventPersister(self.persistence)
+        logger.info(f"[事件总线] 已启用持久化 (batch_mode={batch_mode})")
 
     def disable_persistence(self):
         """禁用数据库持久化"""
         self._persistence_enabled = False
         self.persistence.disable()
+        self._buffered_persister = None
         logger.info("[事件总线] 已禁用持久化")
 
     # ==================== TTL清理 ====================
@@ -595,6 +849,34 @@ class NegotiationEventBus:
 
     # ==================== 事件发布 ====================
 
+    def publish_sync(self, session_id: str, event: Dict[str, Any]):
+        """
+        同步发布协商事件（用于非异步上下文）
+
+        与 publish() 功能相同，但不使用 await。
+        适合在同步测试或非异步环境中使用。
+
+        Args:
+            session_id: 任务/会话编号
+            event: 事件字典
+        """
+        # 确保 eventId 存在
+        if "eventId" not in event:
+            event["eventId"] = str(uuid.uuid4())
+
+        # 存入内存日志
+        if session_id not in self._session_logs:
+            self._session_logs[session_id] = []
+        self._session_logs[session_id].append(event)
+
+        # 更新访问时间
+        self._session_access[session_id] = time.time()
+
+        logger.info(
+            f"[事件总线] 同步发布事件 [{event.get('eventType')}] "
+            f"session={session_id}, {event.get('fromAgent')}->{event.get('toAgent')}"
+        )
+
     async def publish(self, session_id: str, event: Dict[str, Any]):
         """
         发布协商事件（增强版）
@@ -639,7 +921,10 @@ class NegotiationEventBus:
 
         # 【新增】异步持久化到数据库（不阻塞主流程）
         if self._persistence_enabled:
-            asyncio.create_task(self.persistence.save_event(session_id, event))
+            if self._buffered_persister:
+                asyncio.ensure_future(self._buffered_persister.add(session_id, event))
+            else:
+                asyncio.ensure_future(self.persistence.save_event(session_id, event))
 
     # ==================== 事件查询 ====================
 
@@ -655,6 +940,18 @@ class NegotiationEventBus:
             if db_events:
                 return db_events
         return self.get_session_log(session_id)
+
+    async def get_task_events(self, task_id: str) -> List[Dict[str, Any]]:
+        """获取指定任务的所有事件（从数据库）"""
+        if self._persistence_enabled:
+            return await self.persistence.get_events_by_task(task_id)
+        return []
+
+    async def flush_persistence(self) -> int:
+        """强制刷入持久化缓冲区（批量模式下使用）"""
+        if self._buffered_persister:
+            return await self._buffered_persister.flush()
+        return 0
 
     def get_all_sessions(self) -> Dict[str, List[Dict[str, Any]]]:
         """获取所有会话的事件日志"""

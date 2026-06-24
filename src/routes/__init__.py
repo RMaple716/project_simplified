@@ -12,9 +12,11 @@ from .weather import router as weather_router
 from .navigation import router as navigation_router
 from .auth import router as auth_router
 from .ws import router as ws_router
+from .itinerary_phase4 import router as itinerary_phase4_router
+from .qweather import router as qweather_router
 __all__ = [
     "health_router", "requirement_router", "task_router", 
     "agent_router", "itinerary_router", "validate_router", "static_data_router", 
     "integration_router", "nlp_router", "weather_router", "navigation_router", "auth_router",
-    "ws_router"
+    "ws_router", "itinerary_phase4_router", "qweather_router"
 ]

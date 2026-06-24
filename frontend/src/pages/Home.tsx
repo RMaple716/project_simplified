@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { Row, Col, Typography } from 'antd';
+import QuickWeather from '../components/QuickWeather';
 
 const { Title, Paragraph } = Typography;
 
@@ -154,8 +155,11 @@ const Home: React.FC = () => {
         </Col>
       </Row>
 
+            {/* 快捷天气查询 */}
+      <QuickWeather />
+
       {/* 【去AI味】底部小字：不写提示，写一句有画面感的话 */}
-      <div style={{ marginTop: 56, textAlign: 'center', color: '#b0a498', fontSize: 13, lineHeight: 1.8 }}>
+      <div style={{ marginTop: 48, textAlign: 'center', color: '#b0a498', fontSize: 13, lineHeight: 1.8 }}>
         选一个方向，剩下的交给我们。
       </div>
     </div>

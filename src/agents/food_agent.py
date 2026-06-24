@@ -204,3 +204,326 @@ class FoodAgent(BaseAgent):
             },
             "error_message": None
         }
+
+    # ==================== 【改造方案 4.1】Agent间信息共享 ====================
+
+    async def share_info(self, session_id: str, restaurants: List[dict]) -> None:
+        """
+        分享美食信息到共享池（改造方案 4.1.2）
+
+        Args:
+            session_id: 会话ID
+            restaurants: 餐厅列表
+        """
+        from src.services.negotiation_event_bus import agent_message_bus
+
+        info = {
+            "restaurants": [
+                {
+                    "name": r.get("name", ""),
+                    "location": r.get("location", {}),
+                    "cuisine_type": r.get("cuisine_type", ""),
+                    "avg_price": r.get("avg_price", 0),
+                    "rating": r.get("rating", 0),
+                    "meal_type": r.get("meal_type", ""),
+                }
+                for r in restaurants
+                if isinstance(r, dict)
+            ]
+        }
+        await agent_message_bus.share_agent_info(
+            agent_id=self.agent_id,
+            session_id=session_id,
+            info_type="food_info",
+            info_data=info,
+        )
+
+    # ==================== 【步1】新增：Agent间投票处理 ====================
+
+    async def on_message(self, message: dict) -> Optional[dict]:
+        """处理来自其他Agent的消息（增强版：支持投票）"""
+        msg_type = message.get("type", "unknown")
+        from_agent = message.get("fromAgent", "unknown")
+        payload = message.get("payload", {})
+
+        # 投票请求
+        if payload.get("action") == "consensus_vote":
+            return await self._handle_vote(payload)
+
+        # 【改造方案 4.2.5】冲突招标
+        if payload.get("action") == "conflict_bid":
+            return await self._handle_bid(payload)
+
+        # 【P2】冲突咨询
+        if payload.get("action") == "consult_conflict":
+            return await self._handle_consult(payload)
+
+                # 【P2】反提案请求
+        if payload.get("action") == "counter_proposal":
+            return await self._handle_counter_proposal(payload)
+
+        # === 【阶段B】反提案评估 + 条件回应 ===
+        if payload.get("action") == "evaluate_counter_proposal":
+            return await self._handle_evaluate_counter_proposal(payload)
+        if payload.get("action") == "respond_to_condition":
+            return await self._handle_respond_to_condition(payload)
+
+        print(f"\n  🍽️ 美食Agent收到来自 [{from_agent}] 的消息: {msg_type}")
+
+        # 其他消息类型走默认处理
+        from .base_agent import BaseAgent
+        return await BaseAgent.on_message(self, message)
+
+    async def _handle_vote(self, payload: dict) -> dict:
+        """
+        处理投票请求——检查餐饮时间是否受影响。
+        否决条件：餐饮被安排在极不合理的时间（早6点前或晚22点后）。
+        """
+        proposed_summary = payload.get("proposed_day_summary", {})
+        proposed_meals = proposed_summary.get("meals", [])
+
+        import re
+        for meal_desc in proposed_meals:
+            # meal_desc 格式: "餐厅名(HH:MM)"
+            time_match = re.search(r'\((\d{2}:\d{2})\)', meal_desc)
+            if time_match:
+                time_str = time_match.group(1)
+                hour = int(time_str.split(":")[0])
+                name = meal_desc.split("(")[0]
+
+                if hour < 6 or hour >= 22:
+                    return {
+                        "vote": "veto",
+                        "agent_id": self.agent_id,
+                        "reason": f"餐饮'{name}'安排在{time_str}，不在合理用餐时间",
+                    }
+
+        return {"vote": "approve", "agent_id": self.agent_id}
+
+    async def _handle_consult(self, payload: dict) -> dict:
+        """处理冲突咨询"""
+        conflict_type = payload.get("conflict_type", "")
+
+        if conflict_type == "unreasonable_meal_time":
+            return {
+                "suggested_strategy": "strategy_time_shift",
+                "suggested_params": {"margin": 15},
+                "veto_strategies": ["strategy_compress_duration"],
+            }
+        elif conflict_type == "budget_exceeded":
+            return {
+                "suggested_strategy": "strategy_replace_activity",
+                "suggested_params": {},
+                "veto_strategies": [],
+            }
+        elif conflict_type == "time_overlap":
+            return {
+                "suggested_strategy": "strategy_swap_time_slot",
+                "suggested_params": {},
+                "veto_strategies": [],
+            }
+
+        return {"suggested_strategy": None, "suggested_params": {}, "veto_strategies": []}
+
+    async def _handle_counter_proposal(self, payload: dict) -> dict:
+        """处理反提案请求"""
+        conflict = payload.get("conflict", {})
+        conflict_type = conflict.get("type", "")
+
+        strategy_map = {
+            "unreasonable_meal_time": "strategy_time_shift",
+            "budget_exceeded": "strategy_replace_activity",
+            "time_overlap": "strategy_swap_time_slot",
+        }
+
+        strategy = strategy_map.get(conflict_type, "strategy_time_shift")
+
+        return {
+            "proposal_author": self.agent_id,
+            "strategy": strategy,
+            "params": {},
+            "adjustments": [{"field": "策略建议", "item_name": conflict_type, "before": "未修复", "after": f"建议{strategy}"}],
+            "expected_effect": f"美食Agent建议使用{strategy}解决{conflict_type}冲突",
+        }
+
+    async def _handle_bid(self, payload: dict) -> dict:
+        """
+        【改造方案 4.2.5】冲突招标 — 美食Agent投标
+
+        改造后: 从共享信息池读取景点位置和餐饮偏好，
+        用LLM生成考虑行程时序的投标方案。
+
+        Args:
+            payload: {"conflict": {...}, "session_id": str, "day_num": int}
+
+        Returns:
+            {"strategy": str, "params": dict, "expected_utility": float, "analysis": str}
+        """
+        import os
+        conflict = payload.get("conflict", {})
+        conflict_type = conflict.get("type", "")
+        session_id = payload.get("session_id", "")
+        day_num = payload.get("day_num", 1)
+
+        # 读取共享信息池
+        from src.services.negotiation_event_bus import agent_message_bus
+        shared_info = agent_message_bus.get_shared_agent_info(session_id)
+
+        # 如果没有LLM密钥，降级到原有的硬编码映射
+        if not os.getenv("DEEPSEEK_API_KEY"):
+            return self._handle_bid_fallback(payload)
+
+        try:
+            llm_prompt = self._build_bidding_prompt(
+                conflict=conflict,
+                conflict_type=conflict_type,
+                day_num=day_num,
+                shared_info=shared_info,
+            )
+            response_content = await self.call_llm(
+                [{"role": "user", "content": llm_prompt}],
+                max_tokens=1024,
+            )
+            bid_result = self._parse_json_response(response_content)
+
+            strategy = bid_result.get("strategy", "")
+            if strategy not in (
+                "strategy_time_shift", "strategy_swap_time_slot",
+                "strategy_cross_day_move", "strategy_geo_distance_split",
+                "strategy_replace_activity", "strategy_compress_duration",
+            ):
+                return self._handle_bid_fallback(payload)
+
+            return {
+                "strategy": strategy,
+                "params": bid_result.get("params", {"meal_margin": 30}),
+                "expected_utility": float(bid_result.get("expected_utility", 0.5)),
+                "analysis": bid_result.get("analysis", f"美食Agent建议{strategy}解决{conflict_type}冲突"),
+            }
+
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"[美食Agent] LLM投标失败，降级到硬编码映射: {e}")
+            return self._handle_bid_fallback(payload)
+
+    def _build_bidding_prompt(
+        self,
+        conflict: dict,
+        conflict_type: str,
+        day_num: int,
+        shared_info: dict,
+    ) -> str:
+        """构造LLM投标提示词，基于景点和餐饮信息生成投标方案"""
+        conflict_desc = conflict.get("description", "") or conflict.get("conflict_description", "")
+        activities = conflict.get("activities", [])
+
+        # 提取景点和自身餐饮信息
+        attractions_summary = ""
+        food_self_summary = ""
+        try:
+            # 景点信息
+            attr_data = shared_info.get("attractions_agent_001", {}).get("data", {})
+            all_attrs = attr_data.get("attractions", [])
+            if all_attrs:
+                attr_lines = []
+                for a in all_attrs[:6]:
+                    name = a.get("name", "")
+                    slot = a.get("recommended_time_slot", "?")
+                    duration = a.get("best_visit_duration", "?")
+                    attr_lines.append(f"  {name}: 建议时段={slot}, 游览时长={duration}分钟")
+                attractions_summary = "\n".join(attr_lines)
+
+            # 自身的餐饮信息
+            food_data = shared_info.get("food_agent_001", {}).get("data", {})
+            restaurants = food_data.get("restaurants", [])
+            if restaurants:
+                rest_lines = []
+                for r in restaurants[:6]:
+                    name = r.get("name", "")
+                    meal_type = r.get("meal_type", "")
+                    rating = r.get("rating", "?")
+                    addr = r.get("address", "")
+                    rest_lines.append(f"  {name}: {meal_type}, 评分={rating}, 地址={addr}")
+                food_self_summary = "\n".join(rest_lines)
+        except Exception:
+            pass
+
+        prompt = f"""你是一个专业的{self.name}（美食Agent），请分析以下行程冲突，基于餐饮规划知识生成投标方案。
+
+【冲突信息】
+- 冲突类型: {conflict_type}
+- 涉及活动: {', '.join(activities) if activities else '未知'}
+- 描述: {conflict_desc}
+- 第{day_num}天
+
+【景点游览信息】
+{attractions_summary if attractions_summary else '(无景点信息)'}
+
+【附近餐饮信息】
+{food_self_summary if food_self_summary else '(无餐饮信息)'}
+
+【可选的解决策略】
+1. strategy_time_shift - 时间平移（将用餐时间提前或推迟到正常饭点）
+2. strategy_swap_time_slot - 交换时段（将午餐/晚餐互换时间）
+3. strategy_cross_day_move - 跨天移动（将餐厅移到另一天）
+4. strategy_compress_duration - 压缩时长（缩短用餐时间）
+
+【你的任务】
+分析冲突，选择最合适的策略，关注：
+- 用餐时间是否在正常饭点（午餐11:00-13:30，晚餐17:30-20:00）
+- 是否与附近景点游览时间匹配
+- 各餐之间是否留出合理的间隔时间
+
+请返回JSON格式（只返回JSON，不要其他文字）:
+{{
+  "strategy": "选择的策略名称",
+  "params": {{
+    "meal_margin": 30
+  }},
+  "expected_utility": 0.0-1.0的浮点数（越高越有效）,
+  "analysis": "简要分析为什么选择这个策略"
+}}"""
+        return prompt
+
+    def _handle_bid_fallback(self, payload: dict) -> dict:
+        """LLM不可用时的降级方案：原有的硬编码策略映射"""
+        conflict = payload.get("conflict", {})
+        conflict_type = conflict.get("type", "")
+
+        strategy_map = {
+            "unreasonable_meal_time": ("strategy_time_shift", 0.80),
+            "budget_exceeded": ("strategy_replace_activity", 0.55),
+            "time_overlap": ("strategy_swap_time_slot", 0.70),
+            "too_short_duration": ("strategy_time_shift", 0.45),
+        }
+        strategy, utility = strategy_map.get(conflict_type, ("strategy_time_shift", 0.30))
+        return {
+            "strategy": strategy,
+            "params": {"meal_margin": 30},
+            "expected_utility": utility,
+            "analysis": f"美食Agent建议{strategy}解决{conflict_type}冲突",
+        }
+
+
+# ==================== 模块级便捷函数 ====================
+
+_shared_food_agent: Optional[FoodAgent] = None
+
+
+def _get_food_agent() -> FoodAgent:
+    """获取美食Agent单例"""
+    global _shared_food_agent
+    if _shared_food_agent is None:
+        _shared_food_agent = FoodAgent()
+    return _shared_food_agent
+
+
+async def share_info(session_id: str, restaurants: List[dict]) -> None:
+    """
+    模块级便捷函数：分享美食信息到共享池
+
+    供 negotiate_and_fix() 调用，无需实例化 Agent。
+    """
+    agent = _get_food_agent()
+    await agent.share_info(session_id, restaurants)

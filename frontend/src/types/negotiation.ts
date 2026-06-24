@@ -12,14 +12,21 @@
 
 /** 协商事件类型 */
 export type NegotiationEventType =
-  | 'CFP'          // 招标
-  | 'PROPOSE'      // 投标/提案
-  | 'COUNTER'      // 反提案
-  | 'ACCEPT'       // 接受
-  | 'REJECT'       // 拒绝
-  | 'ROLLBACK'     // 回退到上一步（策略失败后回滚）
-  | 'FINALIZED'    // 最终确定
-  | 'AGENT_MSG';   // Agent间消息
+  | 'CFP'             // 招标
+  | 'PROPOSE'         // 投标/提案
+  | 'COUNTER'         // 反提案
+  | 'ACCEPT'          // 接受
+  | 'REJECT'          // 拒绝
+  | 'ROLLBACK'        // 回退到上一步（策略失败后回滚）
+  | 'FINALIZED'       // 最终确定
+  | 'AGENT_MSG'       // Agent间消息
+  // === 任务执行进度事件（WebSocket实时推送） ===
+  | 'TASK_STARTED'                // 批次任务开始
+  | 'SUB_TASK_STARTED'            // 子任务开始执行
+  | 'SUB_TASK_COMPLETED'          // 子任务完成
+  | 'SUB_TASK_FAILED'             // 子任务失败
+  | 'NEGOTIATION_STARTED'         // 协商开始
+  | 'ITINERARY_CREATED';          // 行程已创建
 
 /** 协商阶段 */
 export type NegotiationPhase =
@@ -28,7 +35,8 @@ export type NegotiationPhase =
   | 'BIDDING'
   | 'NEGOTIATE'
   | 'FINALIZING'
-  | 'FINALIZED';
+  | 'FINALIZED'
+  | 'EXECUTING';     // 子任务执行中（新增）
 
 // ==================== Agent间消息类型（新增） ====================
 
@@ -129,6 +137,7 @@ export const PHASE_MAP_CN: Record<NegotiationPhase, string> = {
   NEGOTIATE: '协商中',
   FINALIZING: '确认路线',
   FINALIZED: '规划完成',
+  EXECUTING: '子任务执行中',
 };
 
 /** 协商事件类型到中文描述的映射 */
@@ -141,6 +150,12 @@ export const EVENT_TYPE_CN: Record<NegotiationEventType, string> = {
   ROLLBACK: '回退',
   FINALIZED: '最终确定',
   AGENT_MSG: 'Agent通信',
+  TASK_STARTED: '任务开始',
+  SUB_TASK_STARTED: '子任务开始',
+  SUB_TASK_COMPLETED: '子任务完成',
+  SUB_TASK_FAILED: '子任务失败',
+  NEGOTIATION_STARTED: '协商开始',
+  ITINERARY_CREATED: '行程已创建',
 };
 
 /** Agent消息类型到中文描述的映射 */
@@ -163,6 +178,7 @@ export const PHASE_PROGRESS_RANGE: Record<NegotiationPhase, [number, number]> = 
   NEGOTIATE: [40, 80],
   FINALIZING: [80, 98],
   FINALIZED: [100, 100],
+  EXECUTING: [0, 80],
 };
 
 /** 单次调整详情（字段级变化） */

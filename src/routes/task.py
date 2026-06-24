@@ -232,9 +232,30 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
             import asyncio
             from src.agents import AttractionsAgent, HotelAgent, FoodAgent, TransportAgent
 
+            from src.services.negotiation_event_bus import event_bus, create_negotiation_event, NegotiationEventType, NegotiationPhase
+
             async def execute_subtasks(db_session: Session):
-                """异步执行所有子任务"""
+                """异步执行所有子任务，通过 event_bus 实时推送进度"""
+                # ===== 推送任务开始事件 =====
+                await event_bus.publish(batch_id, {
+                    "eventId": str(uuid.uuid4()),
+                    "sessionId": batch_id,
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "eventType": "TASK_STARTED",
+                    "fromAgent": "dispatcher",
+                    "toAgent": "frontend",
+                    "phase": "EXECUTING",
+                    "proposal": {"totalSubTasks": len(subtasks)},
+                    "utility": {},
+                    "routePreview": {},
+                    "subtaskCount": len(subtasks),
+                    "agentTypes": [s["agent_type"] for s in subtasks],
+                    "cityName": requirements_store.get(requirement_id, {}).get("city_name", ""),
+                    "travelDays": requirements_store.get(requirement_id, {}).get("travel_days", 1),
+                    "message": f"开始规划行程：共 {len(subtasks)} 个子任务"
+                })
                 print(f"[任务执行] 开始执行批次任务 {batch_id}")
+
                 try:
                     # 初始化智能体
                     attractions_agent = AttractionsAgent()
@@ -249,7 +270,33 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                         agent_type = subtask["agent_type"]
                         parameters = subtask["parameters"]
 
+                        agent_label = {
+                            "attraction": "景点推荐",
+                            "accommodation": "住宿推荐",
+                            "food": "美食推荐",
+                            "transport": "交通规划"
+                        }.get(agent_type, agent_type)
+
                         print(f"[任务执行] 开始执行子任务 {task_id_local} ({agent_type})")
+
+                        # ===== 推送子任务开始事件 =====
+                        await event_bus.publish(batch_id, {
+                            "eventId": str(uuid.uuid4()),
+                            "sessionId": batch_id,
+                            "timestamp": int(datetime.now().timestamp() * 1000),
+                            "eventType": "SUB_TASK_STARTED",
+                            "fromAgent": "dispatcher",
+                            "toAgent": f"{agent_type}_agent",
+                            "phase": "EXECUTING",
+                            "proposal": {"index": i + 1, "total": len(subtasks)},
+                            "utility": {},
+                            "routePreview": {},
+                            "subtaskIndex": i + 1,
+                            "subtaskTotal": len(subtasks),
+                            "agentType": agent_type,
+                            "agentLabel": agent_label,
+                            "message": f"[{i + 1}/{len(subtasks)}] {agent_label}智能体正在执行..."
+                        })
 
                         try:
                             # 根据智能体类型执行相应的任务
@@ -294,6 +341,23 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                     result={},
                                     error=f"智能体返回结果类型错误: 期望dict, 实际为{type(result).__name__}"
                                 )
+                                # 推送子任务失败事件
+                                await event_bus.publish(batch_id, {
+                                    "eventId": str(uuid.uuid4()),
+                                    "sessionId": batch_id,
+                                    "timestamp": int(datetime.now().timestamp() * 1000),
+                                    "eventType": "SUB_TASK_FAILED",
+                                    "fromAgent": f"{agent_type}_agent",
+                                    "toAgent": "dispatcher",
+                                    "phase": "EXECUTING",
+                                    "proposal": {},
+                                    "utility": {},
+                                    "routePreview": {},
+                                    "agentType": agent_type,
+                                    "agentLabel": agent_label,
+                                    "error": f"返回结果类型错误: {type(result).__name__}",
+                                    "message": f"❌ {agent_label}智能体执行异常"
+                                })
                                 continue
 
                             status = result.get("status", "failed")
@@ -307,6 +371,7 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                 items = data.get("items", [])
 
                                 task_result = {}
+                                item_count = len(items)
                                 if agent_type == "attraction":
                                     task_result = {"attractions": items}
                                 elif agent_type == "food":
@@ -315,9 +380,11 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                     task_result = {"hotels": items}
                                 elif agent_type == "transport":
                                     items = data.get("items", [])
+                                    item_count = len(items)
                                     task_result = {"transport_options": items, "route_data": data.get("route_data", {})}
                                 else:
                                     task_result = data if isinstance(data, dict) else {"data": data}
+                                    item_count = 0
 
                                 TaskService.update_task_result(
                                     db=db_session,
@@ -326,8 +393,28 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                     result=task_result,
                                     error=""
                                 )
+
+                                # 推送子任务完成事件
+                                await event_bus.publish(batch_id, {
+                                    "eventId": str(uuid.uuid4()),
+                                    "sessionId": batch_id,
+                                    "timestamp": int(datetime.now().timestamp() * 1000),
+                                    "eventType": "SUB_TASK_COMPLETED",
+                                    "fromAgent": f"{agent_type}_agent",
+                                    "toAgent": "dispatcher",
+                                    "phase": "EXECUTING",
+                                    "proposal": {"itemCount": item_count},
+                                    "utility": {},
+                                    "routePreview": {},
+                                    "agentType": agent_type,
+                                    "agentLabel": agent_label,
+                                    "itemCount": item_count,
+                                    "message": f"✅ {agent_label}智能体完成，找到 {item_count} 个推荐项"
+                                })
                             else:
                                 error_msg = result.get("error_message", "执行失败")
+                                print(f"[任务执行] 子任务 {task_id_local} 错误信息: {error_msg}")
+                                print(f"[任务执行] 子任务 {task_id_local} 完整返回结果: {result}")
                                 TaskService.update_task_result(
                                     db=db_session,
                                     task_id=task_id_local,
@@ -335,11 +422,27 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                     result={},
                                     error=error_msg
                                 )
-                                print(f"[任务执行] 子任务 {task_id_local} 错误信息: {error_msg}")
+                                # 推送子任务失败事件
+                                await event_bus.publish(batch_id, {
+                                    "eventId": str(uuid.uuid4()),
+                                    "sessionId": batch_id,
+                                    "timestamp": int(datetime.now().timestamp() * 1000),
+                                    "eventType": "SUB_TASK_FAILED",
+                                    "fromAgent": f"{agent_type}_agent",
+                                    "toAgent": "dispatcher",
+                                    "phase": "EXECUTING",
+                                    "proposal": {},
+                                    "utility": {},
+                                    "routePreview": {},
+                                    "agentType": agent_type,
+                                    "agentLabel": agent_label,
+                                    "error": error_msg,
+                                    "message": f"❌ {agent_label}智能体执行失败: {error_msg}"
+                                })
 
                         except Exception as e:
-                            print(f"[任务执行] 子任务 {task_id_local} 执行失败: {e}")
                             import traceback
+                            print(f"[任务执行] 子任务 {task_id_local} 执行失败: {e}")
                             traceback.print_exc()
                             TaskService.update_task_result(
                                 db=db_session,
@@ -348,6 +451,23 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                 result={},
                                 error=str(e)
                             )
+                            # 推送子任务异常事件
+                            await event_bus.publish(batch_id, {
+                                "eventId": str(uuid.uuid4()),
+                                "sessionId": batch_id,
+                                "timestamp": int(datetime.now().timestamp() * 1000),
+                                "eventType": "SUB_TASK_FAILED",
+                                "fromAgent": f"{agent_type}_agent",
+                                "toAgent": "dispatcher",
+                                "phase": "EXECUTING",
+                                "proposal": {},
+                                "utility": {},
+                                "routePreview": {},
+                                "agentType": agent_type,
+                                "agentLabel": agent_label,
+                                "error": str(e),
+                                "message": f"❌ {agent_label}智能体异常: {str(e)[:100]}"
+                            })
 
                     # 所有子任务完成，检查是否需要创建行程
                     tasks = TaskService.get_batch_tasks(db_session, batch_id)
@@ -356,12 +476,29 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
 
                     print(f"[任务执行] 批次任务 {batch_id} 完成: 成功 {completed_count}, 失败 {failed_count}")
 
+                    # 如果所有子任务完成（无论成败），尝试创建行程
+                    # 但只有全部成功才推送协商开始事件
                     if failed_count == 0:
+                        # 推送协商开始事件
+                        await event_bus.publish(batch_id, {
+                            "eventId": str(uuid.uuid4()),
+                            "sessionId": batch_id,
+                            "timestamp": int(datetime.now().timestamp() * 1000),
+                            "eventType": "NEGOTIATION_STARTED",
+                            "fromAgent": "dispatcher",
+                            "toAgent": "frontend",
+                            "phase": "NEGOTIATE",
+                            "proposal": {},
+                            "utility": {},
+                            "routePreview": {},
+                            "message": "🔄 所有子任务完成，开始协商优化行程..."
+                        })
+
                         try:
                             from src.services.database_service import ItineraryService
                             from src.routes.integration import integrate_agent_results_to_daily_plans
 
-                            # 收集所有子任务的结果（包括失败的，用空数据代替）
+                            # 收集所有子任务的结果
                             attractions_result = None
                             hotel_result = None
                             food_result = None
@@ -417,8 +554,7 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
 
                             day_plans = integrate_agent_results_to_daily_plans(agent_results, structured_req)
 
-                            # ===== 协商修复 + 路线优化（在新事件循环中正确 await）=====
-                            # 注意：路线优化已融入 negotiate_and_fix 的每轮迭代中（作为策略0）
+                            # ===== 协商修复 + 路线优化 =====
                             negotiation_events_to_save = []
                             try:
                                 from src.services.negotiation_service import negotiate_and_fix
@@ -438,15 +574,13 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                 else:
                                     print(f"[任务执行] ⚠ 协商修复完成，仍有未解决冲突")
                                 day_plans = negotiated["day_plans"]
-                                # 从返回结果中提取协商事件（比从 event_bus 重新获取更可靠）
                                 negotiation_events_to_save = negotiated.get("negotiation_events", [])
                             except Exception as e:
                                 import traceback
                                 print(f"[任务执行] 协商修复异常: {e}")
                                 traceback.print_exc()
 
-                            # ===== 将协商事件持久化到 day_plans 中（存入DB）=====
-                            # 这样即使用户刷新页面或重新打开行程详情页，协商事件仍然可用
+                            # 持久化协商事件
                             if negotiation_events_to_save and len(day_plans) > 0:
                                 if isinstance(day_plans[0], dict):
                                     if "negotiation" not in day_plans[0]:
@@ -465,6 +599,22 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                             )
 
                             print(f"[任务执行] 行程创建成功: {itinerary.itinerary_id}")
+
+                            # 推送行程创建完成事件
+                            await event_bus.publish(batch_id, {
+                                "eventId": str(uuid.uuid4()),
+                                "sessionId": batch_id,
+                                "timestamp": int(datetime.now().timestamp() * 1000),
+                                "eventType": "ITINERARY_CREATED",
+                                "fromAgent": "dispatcher",
+                                "toAgent": "frontend",
+                                "phase": "FINALIZED",
+                                "proposal": {"itineraryId": itinerary.itinerary_id},
+                                "utility": {},
+                                "routePreview": {},
+                                "itineraryId": itinerary.itinerary_id,
+                                "message": f"🎉 行程生成成功！共 {travel_days} 天行程"
+                            })
 
                         except Exception as e:
                             print(f"[任务执行] 创建行程失败: {e}")

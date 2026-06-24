@@ -247,8 +247,10 @@ class Itinerary(Base):
     day_plans = Column(JSON, nullable=False, comment="每日计划JSON数组")
     total_budget = Column(Float, comment="总预算")
     actual_cost = Column(Float, default=0, comment="实际花费")
-    status = Column(String(20), default="draft", comment="状态：draft/saved/published")
+    status = Column(String(20), default="draft", comment="状态：draft/saved/published/pending_confirmation/confirmed/rejected/adjusting")
     is_favorite = Column(Boolean, default=False, comment="是否收藏")
+    adjustments_summary = Column(JSON, default=list, comment="【第四阶段】调整摘要列表")
+    version_history = Column(JSON, default=list, comment="【第四阶段】历史版本列表")
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
     
@@ -256,4 +258,39 @@ class Itinerary(Base):
     user = relationship("User", back_populates="itineraries")
     
     def __repr__(self):
-        return f"<Itinerary(itinerary_id='{self.itinerary_id}', title='{self.title}')>"
+        return f"<Itinerary(itinerary_id='{self.itinerary_id}', title='{self.title}', status='{self.status}')>"
+
+class NegotiationEventLog(Base):
+    """协商事件日志（持久化）- 存储所有协商事件用于历史查询和对比"""
+    __tablename__ = "negotiation_event_logs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    session_id = Column(String(64), index=True, nullable=False, comment="会话ID")
+    task_id = Column(String(64), index=True, nullable=True, comment="关联的任务ID")
+    event_type = Column(String(32), nullable=False, comment="事件类型: CFP/PROPOSE/COUNTER/ACCEPT/REJECT/FINALIZED/AGENT_MSG")
+    phase = Column(String(32), nullable=True, comment="协商阶段")
+    from_agent = Column(String(32), nullable=True, comment="发送方Agent")
+    to_agent = Column(String(32), nullable=True, comment="接收方Agent")
+    proposal = Column(Text, nullable=True, comment="提案内容（JSON文本）")
+    utility = Column(Text, nullable=True, comment="效用值（JSON文本）")
+    extra = Column(Text, nullable=True, comment="额外字段（JSON文本）")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True, comment="事件发生时间")
+
+    def __repr__(self):
+        return f"<NegotiationEventLog(id={self.id}, session='{self.session_id}', type='{self.event_type}')>"
+
+    def to_dict(self) -> dict:
+        """转换为字典（反序列化JSON字段）"""
+        import json
+        return {
+            "event_type": self.event_type,
+            "eventId": f"persisted_{self.id}",
+            "sessionId": self.session_id,
+            "task_id": self.task_id,
+            "phase": self.phase,
+            "from_agent": self.from_agent,
+            "to_agent": self.to_agent,
+            "proposal": json.loads(self.proposal) if self.proposal else {}, #type: ignore
+            "utility": json.loads(self.utility) if self.utility else {}, #type: ignore
+            "timestamp": self.created_at.isoformat() if self.created_at else None, #type: ignore
+        }

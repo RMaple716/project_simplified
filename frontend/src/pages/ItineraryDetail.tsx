@@ -524,12 +524,33 @@ const DayPlanContent: React.FC<{
 }) => {
   const timelineItems = [];
 
-  if (dayPlan.weather) {
-    timelineItems.push({
-      color: 'cyan',
-      children: <WeatherInfo weather={dayPlan.weather} />
-    });
-  }
+  // 从当天的景点/餐饮中提取具体城市名（优先于传入的省份级 cityName）
+  const dailyCityName = (() => {
+    // 1. 优先从景点中取 city_name
+    if (dayPlan.attractions && dayPlan.attractions.length > 0) {
+      const attrCity = dayPlan.attractions.find((a: any) => a.city_name);
+      if (attrCity?.city_name) return attrCity.city_name;
+    }
+    // 2. 从餐饮中取 city_name
+    if (dayPlan.meals && dayPlan.meals.length > 0) {
+      const mealCity = dayPlan.meals.find((m: any) => m.city_name);
+      if (mealCity?.city_name) return mealCity.city_name;
+    }
+    // 3. 从酒店中取
+    if (dayPlan.hotel?.city_name) return dayPlan.hotel.city_name;
+    // 4. 回退到传入的 cityName
+    return cityName;
+  })();
+
+        // 天气信息 — 从和风天气 API 获取真实数据
+  timelineItems.push({
+    color: 'cyan',
+    children: <WeatherInfo
+      weather={dayPlan.weather || {}}
+      cityName={dailyCityName}
+      date={dayPlan.date || undefined}
+    />
+  });
 
 // ==================== 构造多路段数据 ====================
 const navData = convertTransportToNavigationData(dayPlan.transport);
@@ -1040,10 +1061,12 @@ const ItineraryDetail: React.FC = () => {
     }
   };
 
-  if (loading) {
+    if (loading) {
     return (
       <div style={{ padding: '48px', textAlign: 'center' }}>
-        <Spin size="large" tip="加载行程详情..." />
+        <Spin size="large">
+          <div style={{ padding: 50 }}>加载行程详情...</div>
+        </Spin>
       </div>
     );
   }

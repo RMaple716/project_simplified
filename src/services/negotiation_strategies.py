@@ -24,10 +24,26 @@
 """
 import time
 import logging
-from typing import Dict, Any, List, Optional, Callable, Tuple
+from typing import Dict, Any, List, Optional, Callable, Tuple, Protocol, runtime_checkable
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+
+
+@runtime_checkable
+class StrategyAdapter(Protocol):
+    """策略适配器协议"""
+    def __call__(
+        self,
+        day_plans: List[dict],
+        day_idx: int,
+        conflict: Dict[str, Any],
+        conflict_type: str,
+        backup_attractions: Optional[List[dict]],
+        structured_requirement: Optional[dict],
+    ) -> Tuple[Optional[Any], bool]:
+        ...
 
 
 class StrategyRegistry:
@@ -35,6 +51,10 @@ class StrategyRegistry:
     策略注册表
 
     管理所有可用的协商策略，支持按冲突类型筛选和优先级排序。
+
+    【增强】每个策略注册时包含一个适配器函数（adapter），
+    负责将统一调用参数转换为该策略函数的具体参数签名。
+    这样就消除了 StrategyExecutor 中的 if/elif 硬编码链。
     """
 
     def __init__(self):
@@ -46,6 +66,9 @@ class StrategyRegistry:
         self._stats: Dict[str, Dict[str, float]] = defaultdict(
             lambda: {"success": 0, "total": 0, "last_used": 0.0}
         )
+        # 【新增】strategy_name -> StrategyAdapter
+        # 适配器知道如何用统一参数调用具体的策略函数
+        self._adapters: Dict[str, StrategyAdapter] = {}
 
     def register_strategy(
         self,
@@ -56,6 +79,7 @@ class StrategyRegistry:
         description: str = "",
         is_async: bool = False,
         timeout_seconds: float = 5.0,
+        adapter: Optional[StrategyAdapter] = None,
     ) -> None:
         """
         注册一个协商策略
@@ -68,6 +92,10 @@ class StrategyRegistry:
             description: 策略描述
             is_async: 是否为异步函数
             timeout_seconds: 超时时间（秒）
+            adapter: 【新增】策略适配器函数。
+                     如果不提供，则默认使用 func 本身，
+                     但需要满足统一的调用签名。
+                     提供适配器后，StrategyExecutor 不再需要 if/elif 链。
         """
         self._strategies[name] = {
             "name": name,
@@ -79,6 +107,10 @@ class StrategyRegistry:
             "timeout_seconds": timeout_seconds,
         }
 
+        # 【新增】保存适配器
+        if adapter is not None:
+            self._adapters[name] = adapter
+
         for ctype in conflict_types:
             existing = self._conflict_strategies[ctype]
             if name not in existing:
@@ -88,13 +120,40 @@ class StrategyRegistry:
 
         logger.info(
             f"[策略注册] '{name}' 已注册 (冲突类型: {conflict_types}, "
-            f"优先级: {priority}, 异步: {is_async})"
+            f"优先级: {priority}, 异步: {is_async}, 有适配器: {adapter is not None})"
         )
 
+    def get_adapter(self, strategy_name: str) -> Optional[StrategyAdapter]:
+        """
+        获取策略的适配器函数
+
+        Args:
+            strategy_name: 策略名称
+
+        Returns:
+            适配器函数，如果没有注册适配器则返回 None
+        """
+        return self._adapters.get(strategy_name)
+
+    def has_adapter(self, strategy_name: str) -> bool:
+        """检查策略是否有注册适配器"""
+        return strategy_name in self._adapters
+
     def unregister_strategy(self, name: str) -> None:
-        """注销策略"""
+        """
+        注销策略（同时清理适配器）
+
+        注意：策略 + 适配器 + 冲突类型映射 三者一起清理，
+        保持注册与注销操作的对称性。
+
+        Args:
+            name: 要注销的策略名称
+        """
         if name in self._strategies:
             info = self._strategies.pop(name)
+            # 同时清理适配器（保持注册/注销对称）
+            self._adapters.pop(name, None)
+            # 从冲突类型映射中移除
             for ctype in info["conflict_types"]:
                 if ctype in self._conflict_strategies and name in self._conflict_strategies[ctype]:
                     self._conflict_strategies[ctype].remove(name)
@@ -389,7 +448,15 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
     注册默认的协商修复策略
 
     将 negotiation_service.py 中的策略函数注册到策略选择器。
-    此函数应在启动时或首次使用策略选择器之前调用。
+    每个策略同时注册一个适配器（adapter），负责将统一调用参数
+    转换为该策略函数的具体参数签名。
+
+    统一适配器签名:
+        adapter(day_plans, day_idx, conflict, conflict_type, backup_attractions, structured_requirement)
+        -> (result, is_multi_day)
+
+    这样 StrategyExecutor.execute_strategy() 就不再需要 if/elif 硬编码链，
+    新增策略只需写 策略函数 + 适配器 即可。
 
     Args:
         strategy_selector_instance: 策略选择器实例
@@ -411,7 +478,131 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         strategy_geo_distance_replace,
     )
 
-    # 注册每个策略（按文档中的优先级顺序）
+    # ===================================================
+    # 适配器工厂
+    # ===================================================
+    # 所有适配器的统一签名:
+    #   def adapter(day_plans, day_idx, conflict, conflict_type,
+    #               backup_attractions, structured_requirement) -> (result, is_multi_day)
+    #
+    # 返回值:
+    #   result: 策略执行结果（dict 单天 / List[dict] 多天 / None 失败）
+    #   is_multi_day: True 表示 result 是多天的 List[dict]
+
+    # ---- 策略1: 时间平移 ----
+    def _adapter_time_shift(day_plans, day_idx, conflict, conflict_type,
+                            backup_attractions, structured_requirement):
+        current_day_plan = day_plans[day_idx]
+        result = strategy_time_shift(current_day_plan, conflict, margin=15)
+        if result is not None and result is not False:
+            return (result, False)
+        return (None, False)
+
+    # ---- 策略2: 开放时间适配 ----
+    def _adapter_adjust_opening_hours(day_plans, day_idx, conflict, conflict_type,
+                                      backup_attractions, structured_requirement):
+        current_day_plan = day_plans[day_idx]
+        result = strategy_adjust_opening_hours(current_day_plan, conflict)
+        if result is not None and result is not False:
+            return (result, False)
+        return (None, False)
+
+    # ---- 策略3: 时段交换 ----
+    def _adapter_swap_time_slot(day_plans, day_idx, conflict, conflict_type,
+                                backup_attractions, structured_requirement):
+        current_day_plan = day_plans[day_idx]
+        result = strategy_swap_time_slot(current_day_plan, conflict)
+        if result is not None and result is not False:
+            return (result, False)
+        return (None, False)
+
+    # ---- 策略4: 时长压缩 ----
+    def _adapter_compress_duration(day_plans, day_idx, conflict, conflict_type,
+                                   backup_attractions, structured_requirement):
+        current_day_plan = day_plans[day_idx]
+        result = strategy_compress_duration(current_day_plan, conflict)
+        if result is not None and result is not False:
+            return (result, False)
+        return (None, False)
+
+    # ---- 策略5: 活动替换 ----
+    def _adapter_replace_activity(day_plans, day_idx, conflict, conflict_type,
+                                  backup_attractions, structured_requirement):
+        if not backup_attractions:
+            return (None, False)
+        current_day_plan = day_plans[day_idx]
+        result = strategy_replace_activity(current_day_plan, conflict, backup_attractions)
+        if result is not None and result is not False:
+            return (result, False)
+        return (None, False)
+
+    # ---- 策略6: 跨天移动 ----
+    def _adapter_cross_day_move(day_plans, day_idx, conflict, conflict_type,
+                                backup_attractions, structured_requirement):
+        if len(day_plans) <= 1:
+            return (None, False)
+        result = strategy_cross_day_move(day_plans, conflict)
+        if result is not None and result is not False:
+            return (result, True)  # is_multi_day = True
+        return (None, False)
+
+    # ---- 策略7: 闭馆日解决 ----
+    def _adapter_closed_day_resolve(day_plans, day_idx, conflict, conflict_type,
+                                    backup_attractions, structured_requirement):
+        if len(day_plans) <= 1 or conflict_type != "closed_day":
+            return (None, False)
+        result = strategy_closed_day_resolve(day_plans, conflict, structured_requirement)
+        if result is not None and result is not False:
+            return (result, True)  # is_multi_day = True
+        return (None, False)
+
+    # ---- 策略8: 交通段拆分 ----
+    def _adapter_transport_split(day_plans, day_idx, conflict, conflict_type,
+                                 backup_attractions, structured_requirement):
+        if conflict_type != "time_overlap":
+            return (None, False)
+        current_day_plan = day_plans[day_idx]
+        conflict_activities = conflict.get("activities", [])
+        transport = current_day_plan.get("transport")
+        if not isinstance(transport, dict):
+            return (None, False)
+        transport_name = f"前往{transport.get('to', '')}"
+        meals = current_day_plan.get("meals", [])
+        for meal in meals:
+            if isinstance(meal, dict):
+                meal_name = meal.get("name", "")
+                if transport_name in conflict_activities and meal_name in conflict_activities:
+                    result = strategy_transport_split(current_day_plan, conflict)
+                    if result is not None and result is not False:
+                        return (result, False)
+                    break
+        return (None, False)
+
+    # ---- 策略9: 地理距离拆分 ----
+    def _adapter_geo_distance_split(day_plans, day_idx, conflict, conflict_type,
+                                    backup_attractions, structured_requirement):
+        if conflict_type not in ("geo_distance",) or len(day_plans) <= 1:
+            return (None, False)
+        result = strategy_geo_distance_split(day_plans, conflict, structured_requirement)
+        if result is not None and result is not False:
+            return (result, True)  # is_multi_day = True
+        return (None, False)
+
+    # ---- 策略10: 地理距离替换 ----
+    def _adapter_geo_distance_replace(day_plans, day_idx, conflict, conflict_type,
+                                      backup_attractions, structured_requirement):
+        if conflict_type not in ("geo_distance",) or not backup_attractions:
+            return (None, False)
+        current_day_plan = day_plans[day_idx]
+        result = strategy_geo_distance_replace(current_day_plan, conflict, backup_attractions)
+        if result is not None and result is not False:
+            return (result, False)
+        return (None, False)
+
+    # ===================================================
+    # 注册每个策略（函数 + 适配器）
+    # ===================================================
+
     registry.register_strategy(
         name="strategy_time_shift",
         func=strategy_time_shift,
@@ -421,6 +612,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         ],
         priority=10,
         description="时间平移：整体平移冲突活动的起止时间",
+        adapter=_adapter_time_shift,
     )
 
     registry.register_strategy(
@@ -431,6 +623,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         ],
         priority=15,
         description="开放时间适配：将活动时间平移到开放时段内",
+        adapter=_adapter_adjust_opening_hours,
     )
 
     registry.register_strategy(
@@ -441,6 +634,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         ],
         priority=20,
         description="时段交换：交换冲突活动的上午/下午时间段",
+        adapter=_adapter_swap_time_slot,
     )
 
     registry.register_strategy(
@@ -451,6 +645,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         ],
         priority=25,
         description="时长压缩：缩短冲突活动的游览时长至45分钟",
+        adapter=_adapter_compress_duration,
     )
 
     registry.register_strategy(
@@ -462,6 +657,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         ],
         priority=30,
         description="活动替换：用备选景点替换冲突景点",
+        adapter=_adapter_replace_activity,
     )
 
     registry.register_strategy(
@@ -473,6 +669,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         ],
         priority=35,
         description="跨天移动：将冲突活动移动到活动最少的一天",
+        adapter=_adapter_cross_day_move,
     )
 
     registry.register_strategy(
@@ -481,6 +678,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         conflict_types=["closed_day"],
         priority=40,
         description="闭馆日解决：将安排在被闭馆日的景点移至其他天",
+        adapter=_adapter_closed_day_resolve,
     )
 
     registry.register_strategy(
@@ -489,6 +687,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         conflict_types=["time_overlap"],
         priority=45,
         description="交通段拆分：拆分交通与餐饮的时间重叠",
+        adapter=_adapter_transport_split,
     )
 
     registry.register_strategy(
@@ -497,6 +696,7 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         conflict_types=["geo_distance", "geo_distance_warning"],
         priority=50,
         description="地理距离拆分：将远距离景点跨天分配到不同天",
+        adapter=_adapter_geo_distance_split,
     )
 
     registry.register_strategy(
@@ -505,10 +705,11 @@ def register_default_strategies(strategy_selector_instance: StrategySelector) ->
         conflict_types=["geo_distance", "geo_distance_warning"],
         priority=55,
         description="地理距离替换：用备选景点替换远距离景点",
+        adapter=_adapter_geo_distance_replace,
     )
 
     logger.info(
-        f"[策略注册] 已注册 {registry.strategy_count} 个策略，"
+        f"[策略注册] 已注册 {registry.strategy_count} 个策略（全部带适配器），"
         f"覆盖 {registry.conflict_type_count} 种冲突类型"
     )
 

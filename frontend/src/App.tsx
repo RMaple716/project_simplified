@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Button, Dropdown } from 'antd';
+import { Layout, Menu, Button, Dropdown, App as AntApp } from 'antd';
 import {
   HomeOutlined,
   PlusOutlined,
@@ -8,7 +8,9 @@ import {
   CompassOutlined,
   UserOutlined,
   LogoutOutlined,
-  LoginOutlined
+  LoginOutlined,
+  CloudOutlined,
+  
 } from '@ant-design/icons';
 import { routes } from './routes';
 import { useSelector, useDispatch } from 'react-redux';
@@ -58,10 +60,11 @@ const AppContent: React.FC = () => {
     }
   }, []);
 
-  const menuItems = [
+    const menuItems = [
     { key: '/', icon: <HomeOutlined />, label: '首页' },
     { key: '/requirement', icon: <PlusOutlined />, label: '新建行程' },
     { key: '/itineraries', icon: <CalendarOutlined />, label: '我的行程' },
+    { key: '/weather', icon: <CloudOutlined />, label: '天气' },
   ];
 
   const handleMenuClick = ({ key }: { key: string }) => navigate(key);
@@ -136,7 +139,9 @@ const AppContent: React.FC = () => {
 // 主应用组件
 const App: React.FC = () => (
   <BrowserRouter>
-    <AppContent />
+    <AntApp>
+      <AppContent />
+    </AntApp>
   </BrowserRouter>
 );
 

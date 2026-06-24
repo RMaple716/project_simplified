@@ -75,9 +75,17 @@ class AttractionsAgent(BaseAgent):
             except Exception as e:
                 print(f"获取天气信息失败: {str(e)}")
 
-                # 如果没有配置API密钥，返回模拟数据
+        # 【调试】打印API配置状态
+        print(f"[DEBUG] DEEPSEEK_API_KEY: {'已配置' if os.getenv('DEEPSEEK_API_KEY') else '未配置'}")
+        print(f"[DEBUG] AMAP_API_KEY: {'已配置' if os.getenv('AMAP_API_KEY') else '未配置'}")
+        print(f"[DEBUG] city_name={city_name}, travel_days={travel_days}, preferences={preferences}")
+
+        # 如果没有配置API密钥，返回模拟数据
         if not os.getenv("DEEPSEEK_API_KEY"):
-              return self._get_mock_data(task_id, city_name, travel_days, start_time, weather_info, preferences)
+            print(f"[DEBUG] DEEPSEEK_API_KEY未配置，返回模拟数据")
+            return self._get_mock_data(task_id, city_name, travel_days, start_time, weather_info, preferences)
+        
+
 
         # 构建系统提示词
         system_prompt = """你是一个专业的景点推荐助手。请根据用户需求和天气情况推荐合适的旅游景点。
@@ -203,7 +211,12 @@ class AttractionsAgent(BaseAgent):
                 "error_message": None
             }
         except Exception as e:
+            import traceback
             processing_time = (time.time() - start_time) * 1000
+            error_detail = f"{type(e).__name__}: {str(e)}"
+            traceback.print_exc()
+            print(f"[DEBUG] AttractionsAgent 执行失败: {error_detail}")
+            print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             return {
                 "task_id": task_id,
                 "status": "failed",
@@ -214,7 +227,7 @@ class AttractionsAgent(BaseAgent):
                     "model_used": "deepseek-chat",
                     "over_budget": False
                 },
-                "error_message": str(e)
+                "error_message": error_detail
             }
 
     def _get_mock_data(self, task_id: str, city_name: str, travel_days: int, start_time: float, weather_info: Optional[Dict[str, Any]] = None, preferences: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -479,6 +492,96 @@ class AttractionsAgent(BaseAgent):
 
         return {"attractions": all_attractions}
 
+    # ==================== 【改造方案 4.1】Agent间信息共享 ====================
+
+    async def share_info(self, session_id: str, attractions: List[dict]) -> None:
+        """
+        分享景点信息到共享池（改造方案 4.1.2）
+
+        被 negotiate_and_fix() 在协商开始时调用。
+        其他 Agent 可以通过 get_shared_agent_info() 获取景点信息。
+
+        Args:
+            session_id: 会话ID
+            attractions: 景点列表
+        """
+        from src.services.negotiation_event_bus import agent_message_bus
+
+        info = {
+            "attractions": [
+                {
+                    "name": a.get("name", ""),
+                    "location": a.get("location", {}),
+                    "recommended_time_slot": a.get("visit_time_slot", "morning"),
+                    "best_visit_duration": a.get("recommended_duration", 120),
+                    "opening_hours": a.get("opening_hours", ""),
+                    "closed_days": a.get("closed_days", []),
+                    "nearby_attractions": self._find_nearby(a, attractions),
+                }
+                for a in attractions
+                if isinstance(a, dict)
+            ]
+        }
+        await agent_message_bus.share_agent_info(
+            agent_id=self.agent_id,
+            session_id=session_id,
+            info_type="attractions_info",
+            info_data=info,
+        )
+
+    def _find_nearby(self, attraction: dict, all_attractions: List[dict]) -> list:
+        """
+        查找某个景点附近的景点（距离<10km）
+
+        Args:
+            attraction: 目标景点
+            all_attractions: 所有景点列表
+
+        Returns:
+            附近景点名称列表
+        """
+        nearby = []
+        loc = attraction.get("location", {})
+        if not isinstance(loc, dict):
+            return nearby
+        lat = loc.get("lat")
+        lng = loc.get("lng")
+        if lat is None or lng is None:
+            return nearby
+
+        name = attraction.get("name", "")
+        for other in all_attractions:
+            if not isinstance(other, dict):
+                continue
+            other_name = other.get("name", "")
+            if other_name == name:
+                continue
+            other_loc = other.get("location", {})
+            if not isinstance(other_loc, dict):
+                continue
+            o_lat = other_loc.get("lat")
+            o_lng = other_loc.get("lng")
+            if o_lat is not None and o_lng is not None:
+                dist = self._haversine_km(
+                    {"lat": float(lat), "lng": float(lng)},
+                    {"lat": float(o_lat), "lng": float(o_lng)},
+                )
+                if dist < 10:
+                    nearby.append(other_name)
+        return nearby
+
+    def _haversine_km(self, loc1: dict, loc2: dict) -> float:
+        """计算两个地点之间的大圆距离（km）"""
+        import math
+        lat1, lng1 = float(loc1["lat"]), float(loc1["lng"])
+        lat2, lng2 = float(loc2["lat"]), float(loc2["lng"])
+        R = 6371
+        dlat = math.radians(lat2 - lat1)
+        dlng = math.radians(lng2 - lng1)
+        a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
+
     # ==================== 新增：Agent间消息处理 ====================
 
     async def on_message(self, message: dict) -> Optional[dict]:
@@ -494,6 +597,26 @@ class AttractionsAgent(BaseAgent):
         msg_type = message.get("type", "unknown")
         from_agent = message.get("fromAgent", "unknown")
         payload = message.get("payload", {})
+
+        # ===== 【步1】投票请求 =====
+        if payload.get("action") == "consensus_vote":
+            return await self._handle_vote(payload)
+
+        # ===== 【阶段B】反提案评估 + 条件回应 =====
+        if payload.get("action") == "evaluate_counter_proposal":
+            return await self._handle_evaluate_counter_proposal(payload)
+        if payload.get("action") == "respond_to_condition":
+            return await self._handle_respond_to_condition(payload)
+
+        # ===== 【改造方案 4.2.5】冲突招标 =====
+        if payload.get("action") == "conflict_bid":
+            return await self._handle_bid(payload)
+        # ===== 【P2】冲突咨询：Agent 建议策略 =====
+        if payload.get("action") == "consult_conflict":
+            return await self._handle_consult(payload)
+        # ===== 【P2】反提案请求：Agent 提供替代方案 =====
+        if payload.get("action") == "counter_proposal":
+            return await self._handle_counter_proposal(payload)
 
         print(f"\n  🏛️ 景点Agent收到来自 [{from_agent}] 的消息: {msg_type}")
 
@@ -556,3 +679,347 @@ class AttractionsAgent(BaseAgent):
 
         else:
             return await super().on_message(message)
+        
+    async def _handle_vote(self, payload: dict) -> dict:
+        """
+        处理投票请求——检查景点时长是否合理。
+        否决条件：景点被压缩到30分钟以下。
+        """
+        proposed_summary = payload.get("proposed_day_summary", {})
+        proposed_attractions = proposed_summary.get("attractions", [])
+
+        import re
+        for attr_desc in proposed_attractions:
+            # attr_desc 格式: "景点名(HH:MM-HH:MM)"
+            time_match = re.findall(r'\((\d{2}:\d{2})-(\d{2}:\d{2})\)', attr_desc)
+            if time_match:
+                start_str, end_str = time_match[0]
+                start_h, start_m = int(start_str.split(":")[0]), int(start_str.split(":")[1])
+                end_h, end_m = int(end_str.split(":")[0]), int(end_str.split(":")[1])
+                duration = (end_h * 60 + end_m) - (start_h * 60 + start_m)
+                name = attr_desc.split("(")[0]
+
+                if duration < 30:
+                    return {
+                        "vote": "veto",
+                        "agent_id": self.agent_id,
+                        "reason": f"景点'{name}'仅安排{duration}分钟，时间太短",
+                    }
+
+        return {"vote": "approve", "agent_id": self.agent_id}
+
+    async def _handle_consult(self, payload: dict) -> dict:
+        """
+        处理冲突咨询——返回建议策略和反对策略。
+
+        Args:
+            payload: {
+                "conflict_type": str,
+                "conflict_description": str,
+                "day": int,
+                "activities": [str],
+                "current_day_summary": {...}
+            }
+
+        Returns:
+            {
+                "suggested_strategy": str | None,
+                "suggested_params": dict,
+                "veto_strategies": [str],
+            }
+        """
+        conflict_type = payload.get("conflict_type", "")
+
+        # 景点Agent对不同冲突类型的建议
+        if conflict_type == "time_overlap":
+            return {
+                "suggested_strategy": "strategy_time_shift",
+                "suggested_params": {"margin": 20},
+                "veto_strategies": ["strategy_compress_duration"],
+            }
+        elif conflict_type in ("too_short_duration", "too_long_duration"):
+            return {
+                "suggested_strategy": "strategy_time_shift",
+                "suggested_params": {},
+                "veto_strategies": [],
+            }
+        elif conflict_type == "closed_day":
+            return {
+                "suggested_strategy": "strategy_swap_time_slot",
+                "suggested_params": {},
+                "veto_strategies": [],
+            }
+        elif conflict_type == "outside_opening_hours":
+            return {
+                "suggested_strategy": "strategy_swap_time_slot",
+                "suggested_params": {},
+                "veto_strategies": [],
+            }
+        elif conflict_type == "geo_distance":
+            return {
+                "suggested_strategy": "strategy_geo_distance_split",
+                "suggested_params": {},
+                "veto_strategies": [],
+            }
+
+        return {"suggested_strategy": None, "suggested_params": {}, "veto_strategies": []}
+
+    async def _handle_counter_proposal(self, payload: dict) -> dict:
+        """
+        处理反提案请求——提供替代调整方案。
+
+        Args:
+            payload: {
+                "conflict": {...},
+                "conflict_description": str,
+                "original_plan": {...},
+            }
+
+        Returns:
+            {
+                "proposal_author": str,
+                "strategy": str,
+                "params": dict,
+                "adjustments": [{"field": str, ...}],
+                "expected_effect": str,
+            }
+        """
+        conflict = payload.get("conflict", {})
+        conflict_type = conflict.get("type", "")
+
+        # 根据冲突类型推荐替代策略
+        strategy_map = {
+            "time_overlap": "strategy_swap_time_slot",
+            "too_short_duration": "strategy_time_shift",
+            "too_long_duration": "strategy_time_shift",
+            "closed_day": "strategy_cross_day_move",
+            "outside_opening_hours": "strategy_swap_time_slot",
+            "geo_distance": "strategy_geo_distance_split",
+        }
+
+        strategy = strategy_map.get(conflict_type, "strategy_time_shift")
+
+        return {
+            "proposal_author": self.agent_id,
+            "strategy": strategy,
+            "params": {},
+            "adjustments": [{"field": "策略建议", "item_name": conflict_type, "before": "未修复", "after": f"建议{strategy}"}],
+            "expected_effect": f"景点Agent建议使用{strategy}解决{conflict_type}冲突",
+        }
+
+    async def _handle_bid(self, payload: dict) -> dict:
+        """
+        【改造方案 4.2.5】冲突招标 — 景点Agent投标
+
+        根据景点领域知识，对冲突标的提交解决方案。
+        改造后: 从共享信息池读取其他Agent的领域数据，
+        用LLM生成真正有领域感知的投标方案。
+
+        Args:
+            payload: {
+                "conflict": {...},
+                "session_id": str,
+                "day_num": int,
+            }
+
+        Returns:
+            {
+                "strategy": str,
+                "params": dict,
+                "expected_utility": float,
+                "analysis": str,
+            }
+        """
+        import os
+        conflict = payload.get("conflict", {})
+        conflict_type = conflict.get("type", "")
+        activities = conflict.get("activities", [])
+        session_id = payload.get("session_id", "")
+        day_num = payload.get("day_num", 1)
+
+        # 读取共享信息池
+        from src.services.negotiation_event_bus import agent_message_bus
+        shared_info = agent_message_bus.get_shared_agent_info(session_id)
+
+        # 如果没有LLM密钥，降级到原有的硬编码映射
+        if not os.getenv("DEEPSEEK_API_KEY"):
+            return self._handle_bid_fallback(payload)
+
+        # 用 LLM 生成领域感知的投标
+        try:
+            llm_prompt = self._build_bidding_prompt(
+                conflict=conflict,
+                conflict_type=conflict_type,
+                activities=activities,
+                day_num=day_num,
+                shared_info=shared_info,
+            )
+            response_content = await self.call_llm(
+                [{"role": "user", "content": llm_prompt}],
+                max_tokens=1024,
+            )
+            bid_result = self._parse_json_response(response_content)
+
+            # 验证返回的有效性
+            strategy = bid_result.get("strategy", "")
+            if strategy not in (
+                "strategy_time_shift", "strategy_swap_time_slot",
+                "strategy_cross_day_move", "strategy_geo_distance_split",
+                "strategy_replace_activity", "strategy_compress_duration",
+            ):
+                # LLM 返回了无效策略名，降级
+                return self._handle_bid_fallback(payload)
+
+            return {
+                "strategy": strategy,
+                "params": bid_result.get("params", {
+                    "margin": 15,
+                    "respect_opening_hours": True,
+                }),
+                "expected_utility": float(bid_result.get("expected_utility", 0.5)),
+                "analysis": bid_result.get("analysis", f"景点Agent分析{conflict_type}冲突后建议{strategy}"),
+            }
+
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"[景点Agent] LLM投标失败，降级到硬编码映射: {e}")
+            return self._handle_bid_fallback(payload)
+
+    def _build_bidding_prompt(
+        self,
+        conflict: dict,
+        conflict_type: str,
+        activities: list,
+        day_num: int,
+        shared_info: dict,
+    ) -> str:
+        """构造LLM投标提示词，让LLM基于领域知识和共享信息生成投标方案"""
+        conflict_desc = conflict.get("description", "") or conflict.get("conflict_description", "")
+
+        # 提取其他Agent的共享信息摘要
+        transport_info_summary = ""
+        food_info_summary = ""
+        attractions_self_info = ""
+        try:
+            # 交通Agent信息
+            transport_data = shared_info.get("transport_agent_001", {}).get("data", {})
+            transport_times = transport_data.get("transport_times", {})
+            if transport_times:
+                sample_keys = list(transport_times.keys())[:5]
+                transport_lines = []
+                for key in sample_keys:
+                    info = transport_times[key]
+                    transport_lines.append(
+                        f"  {key}: {info.get('distance_km', '?')}km, 约{info.get('duration_min', '?')}分钟"
+                    )
+                transport_info_summary = "\n".join(transport_lines)
+
+            # 美食Agent信息
+            food_data = shared_info.get("food_agent_001", {}).get("data", {})
+            restaurants = food_data.get("restaurants", [])
+            if restaurants:
+                rest_names = [r.get("name", "") for r in restaurants[:5]]
+                food_info_summary = "附近餐厅: " + "、".join(rest_names)
+
+            # 自身的景点信息
+            self_shared = shared_info.get("attractions_agent_001", {}).get("data", {})
+            all_attrs = self_shared.get("attractions", [])
+            if all_attrs:
+                attr_lines = []
+                for a in all_attrs[:8]:
+                    name = a.get("name", "")
+                    slot = a.get("recommended_time_slot", "?")
+                    duration = a.get("best_visit_duration", "?")
+                    opening = a.get("opening_hours", "")
+                    nearby = a.get("nearby_attractions", [])
+                    nearby_str = f" (附近: {', '.join(nearby[:3])})" if nearby else ""
+                    attr_lines.append(f"  {name}: 建议时段={slot}, 游览时长={duration}分钟, 开放时间={opening}{nearby_str}")
+                attractions_self_info = "\n".join(attr_lines)
+        except Exception:
+            pass
+
+        prompt = f"""你是一个专业的{self.name}（景点Agent），请分析以下行程冲突，基于你的领域知识生成投标方案。
+
+【冲突信息】
+- 冲突类型: {conflict_type}
+- 涉及活动: {', '.join(activities) if activities else '未知'}
+- 描述: {conflict_desc}
+- 第{day_num}天
+
+【其他Agent的共享信息】
+{transport_info_summary if transport_info_summary else '(无交通信息)'}
+{food_info_summary if food_info_summary else ''}
+
+【当前景点信息】
+{attractions_self_info if attractions_self_info else '(无景点详细信息)'}
+
+【可选的解决策略】
+1. strategy_time_shift - 时间平移（将活动提前或推迟）
+2. strategy_swap_time_slot - 交换时段（将上午/下午的活动互换）
+3. strategy_cross_day_move - 跨天移动（将活动移到另一天）
+4. strategy_geo_distance_split - 地理拆分（将相距远的景点分到不同时段/天）
+5. strategy_replace_activity - 替换活动（用附近替代活动替换）
+6. strategy_compress_duration - 压缩时长（缩短活动时间）
+
+【你的任务】
+分析冲突，选择最合适的策略，并给出合理的参数和预期效用。
+注意考虑景点开放时间、建议游览时段、交通时间等因素。
+
+请返回JSON格式（只返回JSON，不要其他文字）:
+{{
+  "strategy": "选择的策略名称",
+  "params": {{
+    "margin": 15,
+    "respect_opening_hours": true
+  }},
+  "expected_utility": 0.0-1.0的浮点数（越高越有效）,
+  "analysis": "简要分析为什么选择这个策略"
+}}"""
+        return prompt
+
+    def _handle_bid_fallback(self, payload: dict) -> dict:
+        """LLM不可用时的降级方案：原有的硬编码策略映射"""
+        conflict = payload.get("conflict", {})
+        conflict_type = conflict.get("type", "")
+
+        strategy_map = {
+            "time_overlap": ("strategy_time_shift", 0.75),
+            "too_short_duration": ("strategy_time_shift", 0.60),
+            "too_long_duration": ("strategy_time_shift", 0.65),
+            "closed_day": ("strategy_cross_day_move", 0.55),
+            "outside_opening_hours": ("strategy_swap_time_slot", 0.70),
+            "geo_distance": ("strategy_geo_distance_split", 0.50),
+            "overloaded_day": ("strategy_cross_day_move", 0.60),
+            "unreasonable_meal_time": ("strategy_time_shift", 0.40),
+        }
+        strategy, utility = strategy_map.get(conflict_type, ("strategy_time_shift", 0.30))
+        return {
+            "strategy": strategy,
+            "params": {"margin": 15, "respect_opening_hours": True},
+            "expected_utility": utility,
+            "analysis": f"景点Agent建议{strategy}解决{conflict_type}冲突",
+        }
+
+
+# ==================== 模块级便捷函数 ====================
+
+_shared_attractions_agent: Optional[AttractionsAgent] = None
+
+
+def _get_attractions_agent() -> AttractionsAgent:
+    """获取景点Agent单例"""
+    global _shared_attractions_agent
+    if _shared_attractions_agent is None:
+        _shared_attractions_agent = AttractionsAgent()
+    return _shared_attractions_agent
+
+
+async def share_info(session_id: str, attractions: List[dict]) -> None:
+    """
+    模块级便捷函数：分享景点信息到共享池
+
+    供 negotiate_and_fix() 调用，无需实例化 Agent。
+    """
+    agent = _get_attractions_agent()
+    await agent.share_info(session_id, attractions)

@@ -500,252 +500,45 @@ def calculate_transport_time(from_location: str, to_location: str) -> int:
 def check_itinerary_conflicts(day_plans: List[Dict[str, Any]], structured_requirement: Dict[str, Any]) -> Dict[str, Any]:
     """
     完整的行程校验（包括时间冲突、预算等）
-    
+
+    保持原有接口签名和返回值不变，内部委托给 conflict_detector。
+
     Args:
         day_plans: 每日行程计划列表
         structured_requirement: 结构化需求（包含预算等信息）
-    
+
     Returns:
         {
             "valid": bool,
             "conflicts": [...],
-            "suggestions": [...]
+            "suggestions": [...],
+            "total_cost": float
         }
     """
-    all_conflicts = []
+    from src.services.negotiation_core.conflict_detector import detect_conflicts
+
+    result = detect_conflicts(day_plans, structured_requirement)
+
+    # 从冲突中提取所有 suggestion 字段，去重
     suggestions = []
-    total_cost = 0
-    
-    # 遍历每一天的行程
-    for day_idx, day_plan in enumerate(day_plans):
-        day_num = day_idx + 1
-        date = day_plan.get("date", f"第{day_num}天")
-        
-        # 收集当天的所有活动
-        daily_activities = []
-        
-        # 添加景点活动
-        for attraction in day_plan.get("attractions", []):
-            if not isinstance(attraction, dict):
-                continue
-            daily_activities.append({
-                "name": attraction.get("name", "未知景点"),
-                "start_time": attraction.get("start_time") or attraction.get("visit_time", "上午"),
-                "end_time": attraction.get("end_time"),
-                "duration": attraction.get("visit_duration", "2小时"),
-                "activity_type": "attraction",
-                "location": attraction.get("address", ""),
-                "cost": attraction.get("ticket_price", 0) if isinstance(attraction.get("ticket_price"), (int, float)) else 0
-            })
-            total_cost += attraction.get("ticket_price", 0) if isinstance(attraction.get("ticket_price"), (int, float)) else 0
-        
-        # 添加餐饮活动
-        
-        # 【增强】检查餐饮活动是否在合理时间段
-        import datetime as _dt
-        for meal in day_plan.get("meals", []):
-            if not isinstance(meal, dict):
-                continue
-            meal_name = meal.get("name", "用餐")
-            meal_start_str = meal.get("start_time") or meal.get("time") or meal.get("meal_time", "中午")
-            meal_start_m = parse_time_to_minutes(meal_start_str)
-            meal_dur_str = meal.get("duration", "1小时")
-            meal_dur_m = parse_duration_to_minutes(meal_dur_str)
-            meal_end_m = meal_start_m + meal_dur_m
-            
-            # 推断餐别
-            meal_type = (meal.get("meal_type") or "").lower()
-            meal_time_field = (meal.get("meal_time") or "").lower()
-            meal_name_lower = (meal.get("name") or "").lower()
-            
-            # 合理时间范围（分钟）
-            breakfast_range = (420, 540)    # 07:00-09:00
-            lunch_range = (690, 810)        # 11:30-13:30
-            dinner_range = (1020, 1170)     # 17:00-19:30
-            
-            # 判断是哪一餐
-            is_breakfast = any(kw in meal_type or kw in meal_time_field or kw in meal_name_lower 
-                              for kw in ["breakfast", "早餐", "早上", "早"])
-            is_lunch = any(kw in meal_type or kw in meal_time_field or kw in meal_name_lower 
-                          for kw in ["lunch", "午餐", "中午", "中餐"])
-            is_dinner = any(kw in meal_type or kw in meal_time_field or kw in meal_name_lower 
-                           for kw in ["dinner", "晚餐", "晚上", "晚"])
-            
-            # 如果判断不出，从时间推断
-            if not any([is_breakfast, is_lunch, is_dinner]):
-                if 360 <= meal_start_m < 600:
-                    is_breakfast = True
-                elif 660 <= meal_start_m < 870:
-                    is_lunch = True
-                elif 990 <= meal_start_m < 1200:
-                    is_dinner = True
-            
-            if is_breakfast:
-                if meal_start_m < breakfast_range[0] or meal_end_m > breakfast_range[1]:
-                    all_conflicts.append({
-                        "type": "unreasonable_meal_time",
-                        "description": f"早餐'{meal_name}' 安排在 {format_minutes(meal_start_m)}-{format_minutes(meal_end_m)}，"
-                                      f"不在合理早餐时间段（{format_minutes(breakfast_range[0])}-{format_minutes(breakfast_range[1])}）内",
-                        "severity": "warning",
-                        "day": day_num,
-                        "date": date,
-                        "activities": [meal_name],
-                        "meal_type": "breakfast",
-                        "expected_range": f"{format_minutes(breakfast_range[0])}-{format_minutes(breakfast_range[1])}",
-                    })
-            elif is_lunch:
-                if meal_start_m < lunch_range[0] or meal_end_m > lunch_range[1]:
-                    all_conflicts.append({
-                        "type": "unreasonable_meal_time",
-                        "description": f"午餐'{meal_name}' 安排在 {format_minutes(meal_start_m)}-{format_minutes(meal_end_m)}，"
-                                      f"不在合理午餐时间段（{format_minutes(lunch_range[0])}-{format_minutes(lunch_range[1])}）内",
-                        "severity": "warning",
-                        "day": day_num,
-                        "date": date,
-                        "activities": [meal_name],
-                        "meal_type": "lunch",
-                        "expected_range": f"{format_minutes(lunch_range[0])}-{format_minutes(lunch_range[1])}",
-                    })
-            elif is_dinner:
-                if meal_start_m < dinner_range[0] or meal_end_m > dinner_range[1]:
-                    all_conflicts.append({
-                        "type": "unreasonable_meal_time",
-                        "description": f"晚餐'{meal_name}' 安排在 {format_minutes(meal_start_m)}-{format_minutes(meal_end_m)}，"
-                                      f"不在合理晚餐时间段（{format_minutes(dinner_range[0])}-{format_minutes(dinner_range[1])}）内",
-                        "severity": "warning",
-                        "day": day_num,
-                        "date": date,
-                        "activities": [meal_name],
-                        "meal_type": "dinner",
-                        "expected_range": f"{format_minutes(dinner_range[0])}-{format_minutes(dinner_range[1])}",
-                    })
-    
-        for meal in day_plan.get("meals", []):
-            if not isinstance(meal, dict):
-                continue
-            daily_activities.append({
-                "name": meal.get("name", "用餐"),
-                "start_time": meal.get("start_time") or meal.get("time") or meal.get("meal_time", "中午"),
-                "end_time": meal.get("end_time"),
-                "duration": meal.get("duration", "1小时"),
-                "activity_type": "meal",
-                "location": meal.get("address", ""),
-                "cost": meal.get("avg_price_per_person", 0) if isinstance(meal.get("avg_price_per_person"), (int, float)) else 0
-            })
-            total_cost += meal.get("avg_price_per_person", 0) if isinstance(meal.get("avg_price_per_person"), (int, float)) else 0
-        
-        # 添加交通活动
-        if day_plan.get("transport"):
-            transport = day_plan["transport"]
-            if isinstance(transport, dict):
-                daily_activities.append({
-                    "name": f"前往{transport.get('to', '目的地')}",
-                    "start_time": transport.get("departure_time", "上午"),
-                    "duration": transport.get("duration", "1小时"),
-                    "activity_type": "transport",
-                    "location": "",
-                    "cost": transport.get("price", 0) if isinstance(transport.get("price"), (int, float)) else 0
-                })
-                total_cost += transport.get("price", 0) if isinstance(transport.get("price"), (int, float)) else 0
-        
-        # 对该天的活动进行时间冲突检测
-        if daily_activities:
-            day_result = detect_time_conflicts(daily_activities)
-            for conflict in day_result["conflicts"]:
-                conflict["day"] = day_num
-                conflict["date"] = date
-                all_conflicts.append(conflict)
-        
-        # 检查景点开放时间
-        for attraction in day_plan.get("attractions", []):
-            if not isinstance(attraction, dict):
-                continue
-            # 解析游览时间
-            start_time_str = attraction.get("start_time") or attraction.get("visit_time", "上午")
-            start_minutes = parse_time_to_minutes(start_time_str)
-            
-            duration_str = attraction.get("visit_duration", "2小时")
-            duration_minutes = parse_duration_to_minutes(duration_str)
-            end_minutes = start_minutes + duration_minutes
-            
-            # 检查开放时间（传入日期支持闭馆日检测）
-            opening_conflicts = check_attraction_opening_hours(attraction, start_minutes, end_minutes, day_date=date if "-" in str(date) else None)
-            for conflict in opening_conflicts:
-                conflict["day"] = day_num
-                conflict["date"] = date
-                all_conflicts.append(conflict)
-    
-    # ===== 地理位置冲突检测：同一天内相邻景点距离过远 =====
-    for day_idx, day_plan in enumerate(day_plans):
-        day_num = day_idx + 1
-        attractions = day_plan.get("attractions", [])
-        if len(attractions) < 2:
-            continue
+    for c in result.conflicts:
+        sg = c.get("suggestion")
+        if sg and sg not in suggestions:
+            suggestions.append(sg)
 
-        for i in range(len(attractions) - 1):
-            a = attractions[i]
-            b = attractions[i + 1]
-            loc_a = a.get("location") if isinstance(a.get("location"), dict) else {}
-            loc_b = b.get("location") if isinstance(b.get("location"), dict) else {}
-            lat1, lng1 = loc_a.get("lat"), loc_a.get("lng")
-            lat2, lng2 = loc_b.get("lat"), loc_b.get("lng")
-
-            if None not in (lat1, lng1, lat2, lng2):
-                # 类型安全转换（Pylance无法从None检查推断类型收窄）
-                lat1_f, lng1_f = float(lat1 or 0), float(lng1 or 0)
-                lat2_f, lng2_f = float(lat2 or 0), float(lng2 or 0)
-                import math
-                R = 6371
-                dlat = math.radians(lat2_f - lat1_f)
-                dlng = math.radians(lng2_f - lng1_f)
-                a_ = math.sin(dlat/2)**2 + math.cos(math.radians(lat1_f)) * math.cos(math.radians(lat2_f)) * math.sin(dlng/2)**2
-                c_ = 2 * math.atan2(math.sqrt(a_), math.sqrt(1-a_))
-                dist_km = R * c_
-
-                if dist_km > 30:
-                    all_conflicts.append({
-                        "type": "geo_distance",
-                        "description": f"第{day_num}天「{a.get('name','')}」到「{b.get('name','')}」直线距离约{dist_km:.0f}公里，超过30公里，交通耗时过长",
-                        "severity": "error",
-                        "day": day_num,
-                        "activities": [a.get("name",""), b.get("name","")],
-                        "distance_km": round(dist_km, 1)
-                    })
-                    suggestions.append(f"第{day_num}天「{a.get('name','')}」和「{b.get('name','')}」相距过远，建议分开到不同天游览或替换其中一景点")
-                elif dist_km > 15:
-                    all_conflicts.append({
-                        "type": "geo_distance_warning",
-                        "description": f"第{day_num}天「{a.get('name','')}」到「{b.get('name','')}」直线距离约{dist_km:.0f}公里，建议确认交通方案",
-                        "severity": "warning",
-                        "day": day_num,
-                        "activities": [a.get("name",""), b.get("name","")],
-                        "distance_km": round(dist_km, 1)
-                    })
-
-    # 检查总预算
-    budget_limit = structured_requirement.get("total_budget", 0)
-    if budget_limit > 0 and total_cost > budget_limit:
-        all_conflicts.append({
-            "type": "budget_exceeded",
-            "description": f"总花费 {total_cost} 元超出预算 {budget_limit} 元",
-            "severity": "error",
-            "activities": []
-        })
-        suggestions.append("建议调整部分景点或选择更经济的餐厅")
-    
-    # 生成建议
-    if not all_conflicts:
+    # 如果没有任何冲突且没有建议，添加默认提示
+    if not result.conflicts and not suggestions:
         suggestions.append("行程安排合理，无时间冲突")
-    
-    has_error = any(c["severity"] == "error" for c in all_conflicts)
-    
+
+    # valid 字段：当没有 error 级别的冲突时为 True（保持原语义）
+    has_error = any(c.get("severity") == "error" for c in result.conflicts)
+
     return {
         "valid": not has_error,
-        "conflicts": all_conflicts,
+        "conflicts": result.conflicts,
         "suggestions": suggestions,
-        "total_cost": total_cost
+        "total_cost": result._raw.get("total_cost", 0),
     }
-
 
 
 # ==============协商修复路由 ==============

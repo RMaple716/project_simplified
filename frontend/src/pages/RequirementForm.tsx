@@ -382,13 +382,17 @@ const RequirementForm: React.FC = () => {
                 label="出行天数"
                 rules={[{ required: true, message: '请输入出行天数' }]}
               >
-                <InputNumber
-                  min={1} max={30} style={{
-                    width: '100%',
-                    ...(isFieldHighlighted('travel_days') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
-                  }}
-                  addonAfter={isFieldHighlighted('travel_days') ? <Tag color="green" style={{ margin: 0 }}>已提取</Tag> : '天'}
-                />
+                <Space.Compact style={{ width: '100%' }}>
+                  <InputNumber
+                    min={1} max={30} style={{
+                      flex: 1,
+                      ...(isFieldHighlighted('travel_days') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
+                    }}
+                  />
+                  <Tag color={isFieldHighlighted('travel_days') ? 'green' : 'default'} style={{ display: 'flex', alignItems: 'center', marginBlock: 0, borderRadius: '0 6px 6px 0', borderLeft: 'none' }}>
+                    {isFieldHighlighted('travel_days') ? '已提取' : '天'}
+                  </Tag>
+                </Space.Compact>
               </Form.Item>
             </Col>
 
@@ -399,13 +403,17 @@ const RequirementForm: React.FC = () => {
                 label="出行人数"
                 rules={[{ required: true, message: '请输入出行人数' }]}
               >
-                <InputNumber
-                  min={1} max={20} style={{
-                    width: '100%',
-                    ...(isFieldHighlighted('traveler_count') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
-                  }}
-                  addonAfter={isFieldHighlighted('traveler_count') ? <Tag color="green" style={{ margin: 0 }}>已提取</Tag> : '人'}
-                />
+                <Space.Compact style={{ width: '100%' }}>
+                  <InputNumber
+                    min={1} max={20} style={{
+                      flex: 1,
+                      ...(isFieldHighlighted('traveler_count') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
+                    }}
+                  />
+                  <Tag color={isFieldHighlighted('traveler_count') ? 'green' : 'default'} style={{ display: 'flex', alignItems: 'center', marginBlock: 0, borderRadius: '0 6px 6px 0', borderLeft: 'none' }}>
+                    {isFieldHighlighted('traveler_count') ? '已提取' : '人'}
+                  </Tag>
+                </Space.Compact>
               </Form.Item>
             </Col>
 
@@ -447,15 +455,19 @@ const RequirementForm: React.FC = () => {
             label="总预算(元)"
             rules={[{ required: true, message: '请输入总预算' }]}
           >
-            <InputNumber
-              min={0}
-              style={{
-                width: '100%',
-                ...(isFieldHighlighted('total_budget') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
-              }}
-              placeholder="例如:5000"
-              addonAfter={isFieldHighlighted('total_budget') ? <Tag color="green" style={{ margin: 0 }}>已提取</Tag> : '元'}
-            />
+            <Space.Compact style={{ width: '100%' }}>
+              <InputNumber
+                min={0}
+                style={{
+                  flex: 1,
+                  ...(isFieldHighlighted('total_budget') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
+                }}
+                placeholder="例如:5000"
+              />
+              <Tag color={isFieldHighlighted('total_budget') ? 'green' : 'default'} style={{ display: 'flex', alignItems: 'center', marginBlock: 0, borderRadius: '0 6px 6px 0', borderLeft: 'none' }}>
+                {isFieldHighlighted('total_budget') ? '已提取' : '元'}
+              </Tag>
+            </Space.Compact>
           </Form.Item>
 
           {/* 偏好 */}

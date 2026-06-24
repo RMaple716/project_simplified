@@ -56,7 +56,8 @@ async def startup():
     from src.services.negotiation_event_bus import event_bus
     # 启用持久化（如需）
     if os.getenv("ENABLE_EVENT_PERSISTENCE", "false").lower() == "true":
-        event_bus.enable_persistence()
+        batch_mode = os.getenv("EVENT_PERSISTENCE_BATCH_MODE", "false").lower() == "true"
+        event_bus.enable_persistence(batch_mode=batch_mode)
         print("✅ 协商事件持久化已启用")
     # 启动TTL清理（默认5分钟检查一次）
     event_bus.start_cleanup_task(interval_seconds=300)
@@ -108,6 +109,10 @@ app.include_router(src.routes.navigation_router)
 app.include_router(src.routes.auth_router)
 # 【新增】WebSocket 路由
 app.include_router(src.routes.ws_router)
+# 【第四阶段】用户体验闭环路由
+app.include_router(src.routes.itinerary_phase4_router)
+# 【和风天气】代理路由
+app.include_router(src.routes.qweather_router)
 
 # 根路径
 @app.get("/")

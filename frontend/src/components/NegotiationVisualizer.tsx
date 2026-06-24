@@ -22,6 +22,7 @@
  */
 import React, { useEffect, useMemo, useCallback, useState, useRef } from 'react';
 import { Card, Collapse, Space, Typography, Empty, Button, Slider, Switch, Tag, Select, Tooltip, Popover } from 'antd';
+
 import {
   PlayCircleOutlined,
   PauseCircleOutlined,
@@ -56,7 +57,6 @@ import type { NegotiationEvent, NegotiationEventType } from '../types/negotiatio
 import { EVENT_TYPE_CN } from '../types/negotiation';
 import NegotiationAdjustmentSummary from './NegotiationAdjustmentSummary';
 
-const { Panel } = Collapse;
 const { Text } = Typography;
 
 interface NegotiationVisualizerProps {
@@ -538,74 +538,72 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
             size="small"
             ghost
             style={{ margin: 0 }}
-          >
-            {/* 时间轴 */}
-            <Panel
-              header={
-                <Space>
-                  <ClockCircleOutlined />
-                  <Text>事件时间轴</Text>
-                  {filterEventTypes.length > 0 && (
-                    <Tag color="geekblue" style={{ fontSize: 10 }}>
-                      已筛选 {filteredEvents.length} 个
-                    </Tag>
-                  )}
-                </Space>
-              }
-              key="timeline"
-            >
-              <ScrollableRouteTimeline
-                events={filteredEvents}
-                replayIndex={replayIndexInFilter}
-                onEventClick={(event, _idxInFilter) => {
-                  // 将筛选后的索引映射到原始索引
-                  const originalIdx = negotiationState.events.findIndex(
-                    (e) => e.eventId === event.eventId
-                  );
-                  if (originalIdx >= 0) {
-                    handleTimelineEventClick(event, originalIdx);
-                  }
-                }}
-              />
-            </Panel>
-
-            {/* 调整详情汇总 */}
-            <Panel
-              header={
-                <Space>
-                  <SwapOutlined />
-                  <Text>调整详情汇总</Text>
-                  {summaryData && summaryData.totalAdjustments > 0 && (
-                    <Tag color="geekblue" style={{ fontSize: 11 }}>
-                      {summaryData.totalAdjustments} 项变更
-                    </Tag>
-                  )}
-                </Space>
-              }
-              key="adjustments"
-            >
-              <NegotiationAdjustmentSummary
-                events={negotiationState.events}
-                onEventClick={handleTimelineEventClick}
-              />
-            </Panel>
-
-            {/* 效用轨迹图 */}
-            <Panel
-              header={
-                <Space>
-                  <BarChartOutlined />
-                  <Text>效用轨迹图</Text>
-                </Space>
-              }
-              key="utility"
-            >
-              <UtilityTrajectoryChart
-                events={visibleEvents}
-                title="协商效用轨迹"
-              />
-            </Panel>
-          </Collapse>
+            items={[
+              {
+                key: 'timeline',
+                label: (
+                  <Space>
+                    <ClockCircleOutlined />
+                    <Text>事件时间轴</Text>
+                    {filterEventTypes.length > 0 && (
+                      <Tag color="geekblue" style={{ fontSize: 10 }}>
+                        已筛选 {filteredEvents.length} 个
+                      </Tag>
+                    )}
+                  </Space>
+                ),
+                children: (
+                  <ScrollableRouteTimeline
+                    events={filteredEvents}
+                    replayIndex={replayIndexInFilter}
+                    onEventClick={(event, _idxInFilter) => {
+                      const originalIdx = negotiationState.events.findIndex(
+                        (e) => e.eventId === event.eventId
+                      );
+                      if (originalIdx >= 0) {
+                        handleTimelineEventClick(event, originalIdx);
+                      }
+                    }}
+                  />
+                ),
+              },
+              {
+                key: 'adjustments',
+                label: (
+                  <Space>
+                    <SwapOutlined />
+                    <Text>调整详情汇总</Text>
+                    {summaryData && summaryData.totalAdjustments > 0 && (
+                      <Tag color="geekblue" style={{ fontSize: 11 }}>
+                        {summaryData.totalAdjustments} 项变更
+                      </Tag>
+                    )}
+                  </Space>
+                ),
+                children: (
+                  <NegotiationAdjustmentSummary
+                    events={negotiationState.events}
+                    onEventClick={handleTimelineEventClick}
+                  />
+                ),
+              },
+              {
+                key: 'utility',
+                label: (
+                  <Space>
+                    <BarChartOutlined />
+                    <Text>效用轨迹图</Text>
+                  </Space>
+                ),
+                children: (
+                  <UtilityTrajectoryChart
+                    events={visibleEvents}
+                    title="协商效用轨迹"
+                  />
+                ),
+              },
+            ]}
+          />
         </>
       )}
 

@@ -3,9 +3,12 @@
 
 功能:
 1. ✅ 计算行程方案的多维效用值
-2. ✅ 支持可配置的权重
+2. ✅ 支持可配置的权重（从 structured_requirement 读取）
 3. ✅ 支持用户偏好调整
 4. ✅ 用于比较不同协商结果，选择最优方案
+5. ✅ 【第三阶段】warning 冲突惩罚项
+6. ✅ 【第三阶段】效用驱动策略选择（最高效用而非固定顺序）
+7. ✅ 【第三阶段】用户偏好学习（从接受/拒绝/手动调整中自动调整权重）
 
 使用方式:
     from src.services.negotiation_utility import utility_evaluator
@@ -24,7 +27,7 @@
 """
 import math
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -86,6 +89,9 @@ class UtilityResult:
     # 综合得分
     overall: float = 0.0
     
+    # 【第三阶段】冲突惩罚后的效用
+    overall_with_penalty: float = 0.0
+    
     # 详细信息
     details: Dict[str, Any] = field(default_factory=dict)
     
@@ -101,6 +107,7 @@ class UtilityResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "overall": round(self.overall, 4),
+            "overall_with_penalty": round(self.overall_with_penalty, 4),
             "dimensions": {k: round(v, 4) for k, v in self.dimensions.items()},
             "details": self.details,
         }
@@ -108,14 +115,47 @@ class UtilityResult:
 
 class UtilityEvaluator:
     """
-    效用评估器
+    效用评估器（第三增强版）
 
     计算行程方案的多维效用值，支持可配置的权重。
+    【第三阶段新增】:
+      - 从 structured_requirement 中读取用户权重偏好
+      - warning 冲突惩罚项
+      - 用于效用驱动的策略选择
+      - 用户偏好学习（从接受/拒绝/手动调整反馈中自动调整权重）
     """
 
     def __init__(self):
         self.weights = UtilityWeights.default()
-        logger.info("[效用评估] 初始化完成")
+        # 【第三阶段】warning 冲突各类型对应的扣分系数
+        # 权重越高表示用户越在意该类型的 warning
+        self.warning_penalties = {
+            "unreasonable_meal_time": 0.03,       # 不合理用餐时间
+            "overloaded_day": 0.05,               # 当日过满
+            "too_short_duration": 0.04,            # 游览时长过短
+            "too_long_duration": 0.03,             # 游览时长过长
+            "geo_distance_warning": 0.03,          # 地理距离警告
+            "transport_time_warning": 0.04,        # 交通时长警告
+            "budget_exceeded": 0.08,               # 超预算
+            "outside_opening_hours": 0.06,         # 营业时间外
+            "closed_day": 0.07,                    # 闭馆日
+            "cross_day_transport_warning": 0.04,   # 跨天交通警告
+        }
+        # 权重预热期：前 N 轮使用默认权重，之后从需求读取
+        self._warmup_rounds = 0
+
+        # ==================== 【第三阶段】用户偏好学习 ====================
+        # 学习率：每次反馈调整的步长
+        self._learning_rate: float = 0.1
+        # 历史反馈记录：[{feedback, weights_before, dimension_scores, ...}, ...]
+        self._feedback_history: List[Dict[str, Any]] = []
+        # 方案历史：缓存最近 N 次评估的方案，供偏好学习使用
+        self._recent_evaluations: List[dict] = []
+        # 最大历史记录数
+        self._max_feedback_history: int = 50
+        # 当用户拒绝了某个方案时，该方案的效用心跳记录
+        self._rejected_plans: List[Dict[str, Any]] = []
+        logger.info("[效用评估] 第三阶段增强版（含偏好学习）初始化完成")
 
     def configure_weights(self, weights: Dict[str, float]) -> None:
         """
@@ -128,14 +168,109 @@ class UtilityEvaluator:
         self.weights.from_dict(weights)
         logger.info(f"[效用评估] 权重已更新: {self.weights.to_dict()}")
 
+    def configure_weights_from_requirement(
+        self,
+        structured_requirement: Dict[str, Any],
+    ) -> None:
+        """
+        【第三阶段】从结构化需求中读取用户权重偏好
+
+        权重来源于：
+        1. structured_requirement 中的 "utility_weights" 字段
+        2. 如果未设置，则从用户的 "preferences" 推断
+        3. 如果都未设置，使用默认权重
+
+        Args:
+            structured_requirement: 结构化需求
+        """
+        # 方式1：直接读取 utility_weights
+        utility_weights = structured_requirement.get("utility_weights")
+        if utility_weights and isinstance(utility_weights, dict):
+            self.weights.from_dict(utility_weights)
+            logger.info(
+                f"[效用评估] 从需求读取权重: {self.weights.to_dict()}"
+            )
+            return
+
+        # 方式2：从 preferences 推断
+        preferences = structured_requirement.get("preferences", [])
+        if preferences:
+            inferred = self._infer_weights_from_preferences(preferences)
+            self.weights.from_dict(inferred)
+            logger.info(
+                f"[效用评估] 从偏好'{preferences}'推断权重: "
+                f"{self.weights.to_dict()}"
+            )
+            return
+
+        # 方式3：默认权重
+        logger.info(f"[效用评估] 使用默认权重: {self.weights.to_dict()}")
+
+    def _infer_weights_from_preferences(
+        self,
+        preferences: List[str],
+    ) -> Dict[str, float]:
+        """
+        从用户偏好推断效用权重
+
+        Args:
+            preferences: 用户偏好列表
+
+        Returns:
+            推断的权重字典
+        """
+        pref_text = " ".join(preferences).lower()
+
+        # 各维度关键词映射
+        time_keywords = ["紧凑", "高效", "密集", "快", "省时", "效率", "时间"]
+        geo_keywords = ["近", "集中", "步行", "紧凑", "方便", "附近", "顺路", "距离"]
+        budget_keywords = ["省钱", "预算", "便宜", "经济", "实惠", "穷游", "低价"]
+        pref_keywords = ["深度", "品质", "体验", "特色", "美食", "文化", "自然", "购物"]
+
+        # 计算各维度匹配度
+        time_weight = self._keyword_match_score(pref_text, time_keywords) * 0.3 + 0.2
+        geo_weight = self._keyword_match_score(pref_text, geo_keywords) * 0.3 + 0.15
+        budget_weight = self._keyword_match_score(pref_text, budget_keywords) * 0.3 + 0.10
+        pref_weight = self._keyword_match_score(pref_text, pref_keywords) * 0.3 + 0.20
+
+        # 归一化
+        weights = {
+            "time_rationality": time_weight,
+            "geo_compactness": geo_weight,
+            "budget_conformance": budget_weight,
+            "preference_match": pref_weight,
+        }
+        total = sum(weights.values())
+        if total > 0:
+            for k in weights:
+                weights[k] /= total
+
+        return weights
+
+    def _keyword_match_score(
+        self,
+        text: str,
+        keywords: List[str],
+    ) -> float:
+        """计算文本中关键词的匹配得分（0~1）"""
+        if not text or not keywords:
+            return 0.5
+        matches = sum(1 for kw in keywords if kw in text)
+        return min(1.0, matches / 2.0)  # 2个关键词就满分
+
     def get_weights(self) -> Dict[str, float]:
         """获取当前权重配置"""
         return self.weights.to_dict()
+
+    def get_warning_penalty(self, conflict_type: str) -> float:
+        """获取指定冲突类型的扣分系数"""
+        return self.warning_penalties.get(conflict_type, 0.02)
 
     def evaluate(
         self,
         day_plans: List[Dict[str, Any]],
         structured_requirement: Dict[str, Any],
+        conflicts: Optional[List[Dict[str, Any]]] = None,
     ) -> UtilityResult:
         """
         计算行程方案的多维效用
@@ -143,6 +278,7 @@ class UtilityEvaluator:
         Args:
             day_plans: 每日行程列表
             structured_requirement: 结构化需求
+            conflicts: 【第三阶段】可选，当前冲突列表，用于计算惩罚项
 
         Returns:
             效用评估结果
@@ -185,7 +321,46 @@ class UtilityEvaluator:
             + pref_score * self.weights.preference_match
         )
 
+        # 【第三阶段】warning 冲突惩罚项
+        penalty = self._calculate_conflict_penalty(conflicts)
+        result.overall_with_penalty = max(0.0, result.overall - penalty)
+        result.details["conflict_penalty"] = {
+            "penalty": round(penalty, 4),
+            "conflicts_count": len(conflicts) if conflicts else 0,
+        }
+
         return result
+
+    def _calculate_conflict_penalty(
+        self,
+        conflicts: Optional[List[Dict[str, Any]]],
+    ) -> float:
+        """
+        【第三阶段】计算冲突扣分
+
+        每个 warning 冲突根据类型扣减效用值。
+        error 冲突已由协商流程单独处理，这里只计算 warning 的扣分。
+
+        Args:
+            conflicts: 冲突列表
+
+        Returns:
+            总扣分值（0~1）
+        """
+        if not conflicts:
+            return 0.0
+
+        total_penalty = 0.0
+        for conflict in conflicts:
+            conflict_type = conflict.get("type", "")
+            severity = conflict.get("severity", "warning")
+            # warning 级别的冲突才扣分
+            if severity == "warning":
+                penalty = self.get_warning_penalty(conflict_type)
+                total_penalty += penalty
+
+        # 扣分上限 0.5，防止效用被过度压低
+        return min(0.5, total_penalty)
 
     def _evaluate_time_rationality(
         self,
@@ -548,6 +723,326 @@ class UtilityEvaluator:
         evaluated.sort(key=lambda x: x[1].overall, reverse=True)
         return evaluated
 
+    def select_best_strategy_result(
+        self,
+        candidates: List[Tuple[str, List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]],
+        structured_requirement: Dict[str, Any],
+    ) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
+        """
+        【第三阶段】效用驱动的策略选择
+
+        从多个候选方案中选择效用最高的那个。
+        替代原有的"按固定优先级顺序尝试，第一个成功就返回"。
+
+        Args:
+            candidates: [(strategy_name, day_plans, conflict, adjustments), ...]
+            structured_requirement: 结构化需求
+
+        Returns:
+            (best_strategy, best_plans, best_utility)
+            如果无候选，返回 (None, None, None)
+        """
+        if not candidates:
+            return None, None, None
+
+        best_strategy = None
+        best_plans = None
+        best_utility = -1.0
+        best_utility_dict = None
+
+        for strategy_name, plans, conflict, adjustments in candidates:
+            utility = self.evaluate(plans, structured_requirement, conflicts=[conflict])
+            # 使用含惩罚的综合效用
+            effective_utility = utility.overall_with_penalty
+
+            if effective_utility > best_utility:
+                best_utility = effective_utility
+                best_strategy = strategy_name
+                best_plans = plans
+                best_utility_dict = utility
+
+            logger.debug(
+                f"[效用驱动选择] {strategy_name}: "
+                f"overall={utility.overall:.4f}, "
+                f"with_penalty={effective_utility:.4f}"
+            )
+
+        logger.info(
+            f"[效用驱动选择] 选中 '{best_strategy}': "
+            f"utility={best_utility:.4f}"
+        )
+
+        return best_strategy, best_plans, best_utility_dict #type:ignore
+
+    # ==============================================================
+    # 【第三阶段】用户偏好学习
+    # ==============================================================
+
+    def record_feedback(
+        self,
+        day_plans: List[Dict[str, Any]],
+        structured_requirement: Dict[str, Any],
+        feedback: str,
+        user_notes: Optional[str] = None,
+    ) -> None:
+        """
+        记录用户对某个协商方案的反馈
+
+        支持的反馈类型:
+          - "accept": 用户接受了方案 → 确认当前权重合理（小幅度正向增强）
+          - "reject": 用户拒绝了方案 → 分析该方案的维度缺陷，调低表现好的维度权重
+          - "adjust": 用户手动调整了部分内容 → 对比调整前后的维度变化
+          - "prefer_time": 用户更看重时间合理性 → 调高 time_rationality 权重
+          - "prefer_geo": 用户更看重地理紧凑性 → 调高 geo_compactness 权重
+          - "prefer_budget": 用户更看重预算 → 调高 budget_conformance 权重
+          - "prefer_pref": 用户更看重偏好匹配 → 调高 preference_match 权重
+
+        Args:
+            day_plans: 方案行程
+            structured_requirement: 结构化需求
+            feedback: 反馈类型
+            user_notes: 用户备注（可选）
+        """
+        # 计算该方案的各维度得分
+        result = self.evaluate(day_plans, structured_requirement)
+
+        # 记录反馈历史
+        record = {
+            "feedback": feedback,
+            "weights_before": self.weights.to_dict(),
+            "dimension_scores": result.dimensions,
+            "overall": result.overall,
+            "user_notes": user_notes,
+            "timestamp": self._current_timestamp(),
+        }
+        self._feedback_history.append(record)
+
+        # 根据反馈类型调整权重
+        if feedback == "accept":
+            self._learn_from_acceptance(result)
+        elif feedback == "reject":
+            self._learn_from_rejection(result)
+        elif feedback == "adjust":
+            self._learn_from_adjustment(day_plans, structured_requirement, user_notes)
+        elif feedback.startswith("prefer_"):
+            preferred_dim = feedback.replace("prefer_", "")
+            self._learn_from_explicit_preference(preferred_dim)
+
+        # 限制历史记录大小
+        if len(self._feedback_history) > self._max_feedback_history:
+            self._feedback_history = self._feedback_history[
+                -self._max_feedback_history:
+            ]
+
+    def _learn_from_acceptance(self, result: UtilityResult) -> None:
+        """
+        从用户接受的行为中学习
+
+        用户接受了方案 → 各维度都比较满意 → 小幅度正向增强当前权重。
+        方案中得分特别高的维度说明用户比较认可该方向，微调权重。
+        """
+        changes = {}
+        for dim, score in result.dimensions.items():
+            # 得分 > 0.7 的维度：小幅调高权重（确认方向正确）
+            if score > 0.7:
+                factor = 1.0 + self._learning_rate * 0.3 * (score - 0.7)
+                changes[dim] = getattr(self.weights, dim) * factor
+            # 得分 < 0.4 的维度：小幅调低权重（用户可能不重视这个维度）
+            elif score < 0.4:
+                factor = 1.0 - self._learning_rate * 0.2 * (0.4 - score)
+                changes[dim] = getattr(self.weights, dim) * factor
+
+        if changes:
+            for k, v in changes.items():
+                setattr(self.weights, k, max(0.05, min(0.8, v)))
+            self.weights.normalize()
+            logger.info(
+                f"[偏好学习-接受] 权重已微调: {self.weights.to_dict()}"
+            )
+
+    def _learn_from_rejection(self, result: UtilityResult) -> None:
+        """
+        从用户拒绝的行为中学习
+
+        用户拒绝了方案 → 某些维度不满意。
+        原则：对得分高的维度调低权重（用户不认可这个方向的过度优化），
+              对得分低的维度调高权重（用户希望这个维度做得更好）。
+        """
+        changes = {}
+        for dim, score in result.dimensions.items():
+            # 得分 > 0.7 但被拒绝 → 用户不认可这个维度的过度 ? 调低权重
+            if score > 0.7:
+                factor = 1.0 - self._learning_rate * 0.4 * (score - 0.7)
+                changes[dim] = getattr(self.weights, dim) * factor
+            # 得分 < 0.4 且被拒绝 → 用户希望该维度改善 → 调高权重
+            elif score < 0.4:
+                factor = 1.0 + self._learning_rate * 0.3 * (0.4 - score)
+                changes[dim] = getattr(self.weights, dim) * factor
+
+        if changes:
+            for k, v in changes.items():
+                setattr(self.weights, k, max(0.05, min(0.8, v)))
+            self.weights.normalize()
+            logger.info(
+                f"[偏好学习-拒绝] 权重已调整: {self.weights.to_dict()}"
+            )
+
+    def _learn_from_adjustment(
+        self,
+        day_plans: List[Dict[str, Any]],
+        structured_requirement: Dict[str, Any],
+        user_notes: Optional[str] = None,
+    ) -> None:
+        """
+        从用户手动调整的行为中学习
+
+        用户手动调整了行程 → 分析调整方向。
+        通过比较用户提供的调整说明来判断倾向。
+        user_notes 可能包含关键词如 "太赶"、"距离太远"、"太贵"等。
+        """
+        if not user_notes:
+            return
+
+        notes_lower = user_notes.lower()
+
+        # 关键词 → 维度映射
+        keyword_dimensions = {
+            "太赶": "time_rationality",
+            "时间": "time_rationality",
+            "来不及": "time_rationality",
+            "太远": "geo_compactness",
+            "距离": "geo_compactness",
+            "不顺路": "geo_compactness",
+            "太贵": "budget_conformance",
+            "预算": "budget_conformance",
+            "花钱": "budget_conformance",
+            "不喜欢": "preference_match",
+            "没兴趣": "preference_match",
+            "想去": "preference_match",
+        }
+
+        adjustments = {dim: 0.0 for dim in ["time_rationality", "geo_compactness", "budget_conformance", "preference_match"]}
+        for keyword, dim in keyword_dimensions.items():
+            if keyword in notes_lower:
+                # 用户对这个维度不满意 → 调高其权重
+                adjustments[dim] += self._learning_rate * 0.5
+
+        # 应用调整
+        has_change = False
+        for dim, delta in adjustments.items():
+            if delta > 0:
+                new_val = getattr(self.weights, dim) + delta
+                setattr(self.weights, dim, max(0.05, min(0.8, new_val)))
+                has_change = True
+
+        if has_change:
+            self.weights.normalize()
+            logger.info(
+                f"[偏好学习-调整] 从用户备注'{user_notes}'学习: "
+                f"权重已更新: {self.weights.to_dict()}"
+            )
+
+    def _learn_from_explicit_preference(self, preferred_dim: str) -> None:
+        """
+        从用户的显式偏好选择中学习
+
+        Args:
+            preferred_dim: 用户偏好的维度名（不含 "prefer_" 前缀）
+        """
+        dim_mapping = {
+            "time": "time_rationality",
+            "geo": "geo_compactness",
+            "budget": "budget_conformance",
+            "pref": "preference_match",
+        }
+
+        target_dim = dim_mapping.get(preferred_dim)
+        if not target_dim:
+            logger.warning(f"[偏好学习] 未知偏好维度: {preferred_dim}")
+            return
+
+        # 调高目标维度权重，等比调低其他维度
+        current = getattr(self.weights, target_dim)
+        increase = self._learning_rate * 0.4
+        new_target = min(0.8, current + increase)
+
+        # 其他维度等比缩减
+        other_dims = [d for d in ["time_rationality", "geo_compactness", "budget_conformance", "preference_match"] if d != target_dim]
+        total_other = sum(getattr(self.weights, d) for d in other_dims)
+        if total_other > 0:
+            scale = (1.0 - new_target) / total_other
+            for d in other_dims:
+                setattr(self.weights, d, getattr(self.weights, d) * scale)
+
+        setattr(self.weights, target_dim, new_target)
+        self.weights.normalize()
+
+        logger.info(
+            f"[偏好学习-显式] 用户偏好'{preferred_dim}': "
+            f"权重已更新: {self.weights.to_dict()}"
+        )
+
+    def get_feedback_history(self) -> List[Dict[str, Any]]:
+        """
+        获取反馈历史记录
+
+        Returns:
+            反馈历史列表
+        """
+        return list(self._feedback_history)
+
+    def suggest_next_weights(
+        self,
+        base_requirement: Dict[str, Any],
+    ) -> Dict[str, float]:
+        """
+        根据历史反馈建议下一轮协商的权重
+
+        综合分析之前的反馈历史，给出推荐的权重配置。
+        如果历史记录不足，返回基于 structured_requirement 的权重。
+
+        Args:
+            base_requirement: 基础结构化需求
+
+        Returns:
+            建议的权重字典
+        """
+        if len(self._feedback_history) < 2:
+            # 历史不足，使用基础的权重配置
+            self.configure_weights_from_requirement(base_requirement)
+            return self.weights.to_dict()
+
+        # 使用最近 5 条反馈的平均倾向
+        recent = self._feedback_history[-5:]
+
+        # 统计各反馈类型出现的次数
+        feedback_counts = {}
+        for record in recent:
+            fb = record["feedback"]
+            feedback_counts[fb] = feedback_counts.get(fb, 0) + 1
+
+        # 根据反馈频率调整
+        suggested = UtilityWeights.default()
+        # 从 base_requirement 初始化
+        if "utility_weights" in base_requirement:
+            suggested.from_dict(base_requirement["utility_weights"])
+
+        # 应用反馈倾向
+        for fb, count in feedback_counts.items():
+            if fb == "reject":
+                # 多次拒绝 → 尝试改变权重分布
+                for dim in ["time_rationality", "geo_compactness", "budget_conformance", "preference_match"]:
+                    current = getattr(suggested, dim)
+                    setattr(suggested, dim, current * (1.0 + 0.05 * count))
+
+        suggested.normalize()
+        return suggested.to_dict()
+
+    def _current_timestamp(self) -> str:
+        """获取当前时间戳字符串"""
+        from datetime import datetime
+        return datetime.now().isoformat(timespec="seconds")
+
 
 # ==================== 全局单例 ====================
 
@@ -559,6 +1054,7 @@ utility_evaluator = UtilityEvaluator()
 def compute_utility_dict(
     day_plans: List[Dict[str, Any]],
     structured_requirement: Dict[str, Any],
+    conflicts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, float]:
     """
     计算并返回效用字典（兼容旧版接口）
@@ -566,15 +1062,17 @@ def compute_utility_dict(
     Args:
         day_plans: 每日行程
         structured_requirement: 结构化需求
+        conflicts: 【第三阶段】可选，冲突列表
 
     Returns:
         效用字典 {"dispatcher": overall, "vehicle": geo_compactness, ...}
     """
-    result = utility_evaluator.evaluate(day_plans, structured_requirement)
+    result = utility_evaluator.evaluate(day_plans, structured_requirement, conflicts=conflicts)
     return {
         "dispatcher": round(result.overall, 4),
         "time_rationality": round(result.time_rationality, 4),
         "geo_compactness": round(result.geo_compactness, 4),
         "budget_conformance": round(result.budget_conformance, 4),
         "preference_match": round(result.preference_match, 4),
+        "overall_with_penalty": round(result.overall_with_penalty, 4),
     }

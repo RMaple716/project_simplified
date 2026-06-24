@@ -155,10 +155,12 @@ const ItineraryList: React.FC = () => {
         </Col>
       </Row>
 
-      {/* 加载状态 */}
+            {/* 加载状态 */}
       {loading && (
         <div style={{ textAlign: 'center', padding: '80px 0' }}>
-          <Spin size="large" tip="加载行程列表..." />
+          <Spin size="large">
+            <div style={{ padding: 50 }}>加载行程列表...</div>
+          </Spin>
         </div>
       )}
 

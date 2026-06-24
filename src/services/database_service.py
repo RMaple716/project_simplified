@@ -178,9 +178,12 @@ class ItineraryService:
     """行程管理服务"""
     
     @staticmethod
-    def create_itinerary(db: Session, user_id: str, day_plans: List[Dict[str, Any]], 
-                        title: Optional[str] = None, total_budget: Optional[float] = None, 
-                        requirement_id: Optional[str] = None) -> Itinerary:
+    def create_itinerary(
+        db: Session, user_id: str, day_plans: List[Dict[str, Any]],
+        title: Optional[str] = None, total_budget: Optional[float] = None,
+        requirement_id: Optional[str] = None,
+        adjustments_summary: Optional[List[str]] = None,
+    ) -> Itinerary:
         """创建新行程"""
         import uuid
         itinerary_id = str(uuid.uuid4())
@@ -193,7 +196,9 @@ class ItineraryService:
             day_plans=day_plans,
             total_budget=total_budget,
             status="draft",
-            is_favorite=False
+            is_favorite=False,
+            adjustments_summary=adjustments_summary or [],
+            version_history=[],
         )
         
         db.add(itinerary)

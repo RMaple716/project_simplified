@@ -1,20 +1,16 @@
-﻿"""
-协商智能体服务 - 协调层核心引擎
+"""
+协商智能体服务 - 协调层入口（兼容旧接口）
 
-功能:
-1. 冲突检测后的自动协商修复（8种策略）
-2. 多轮迭代优化（修复→校验→再修复→再校验）
-3. 接入高德地图API的真实路线优化（贪心最近邻算法）
-4. 事件驱动协商可视化（向 NegotiationEventBus 发布结构化事件）
-5. 【P1增强】LLM驱动的策略仲裁（当规则化策略全部失败时）
-6. 【P1增强】多维效用评估体系（动态计算效用值）
-7. 【P1增强】动态策略选择器（根据冲突类型智能选择策略）
+职责:
+1. 提供 negotiate_and_fix() 和 full_negotiation_pipeline() 等外部入口函数
+2. 策略注册（首次运行自动触发）
+3. 所有具体实现已迁移至 src/services/negotiation_core/
 
 使用方式:
-    from src.services.negotiation_service import full_negotiation_pipeline
+    from src.services.negotiation_service import negotiate_and_fix
 
-    result = await full_negotiation_pipeline(
-        agent_results=agent_results,
+    result = await negotiate_and_fix(
+        day_plans=day_plans,
         structured_requirement=structured_req,
         optimize_route=True,
         use_real_traffic=False  # 设为True需配置AMAP_API_KEY
@@ -1557,222 +1553,15 @@ def _haversine_distance(loc1: dict, loc2: dict) -> float:
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-# ==================== 5. 调整详情生成工具 ====================
-
-def _build_adjustment_details(plan_before: dict, plan_after: dict, strategy_name: str) -> list:
-    """
-    对比修复前后的 day_plan，生成详细的调整内容列表
-
-    返回格式:
-    [
-        {
-            "field": "游览时间",
-            "item_name": "故宫博物院",
-            "before": "09:00-12:00",
-            "after": "10:00-13:00",
-            "strategy": "时间平移"
-        },
-        ...
-    ]
-    """
-    details = []
-
-    # ---- 比较景点变化 ----
-    before_attrs = {a.get("name", ""): a for a in plan_before.get("attractions", []) if isinstance(a, dict)}
-    after_attrs = {a.get("name", ""): a for a in plan_after.get("attractions", []) if isinstance(a, dict)}
-
-    all_names = set(list(before_attrs.keys()) + list(after_attrs.keys()))
-    for name in all_names:
-        before_attr = before_attrs.get(name)
-        after_attr = after_attrs.get(name)
-
-        if not before_attr and after_attr:
-            # 新增景点
-            details.append({
-                "field": "新增景点",
-                "item_name": name,
-                "before": "无",
-                "after": after_attr.get("name", name),
-                "strategy": strategy_name,
-            })
-            continue
-
-        if before_attr and not after_attr:
-            # 移除景点
-            details.append({
-                "field": "移除景点",
-                "item_name": name,
-                "before": before_attr.get("name", name),
-                "after": "已移除",
-                "strategy": strategy_name,
-            })
-            continue
-
-        if not before_attr or not after_attr:
-            continue
-
-        # 检查游览时间变化 (start_time / end_time)
-        b_start = before_attr.get("start_time") or before_attr.get("visit_time", "")
-        a_start = after_attr.get("start_time") or after_attr.get("visit_time", "")
-        b_end = before_attr.get("end_time", "")
-        a_end = after_attr.get("end_time", "")
-        if b_start != a_start or b_end != a_end:
-            details.append({
-                "field": "游览时间",
-                "item_name": name,
-                "before": f"{b_start}{'-' + b_end if b_end else ''}",
-                "after": f"{a_start}{'-' + a_end if a_end else ''}",
-                "strategy": strategy_name,
-            })
-
-        # 检查时长变化
-        b_dur = before_attr.get("duration") or before_attr.get("visit_duration", "")
-        a_dur = after_attr.get("duration") or after_attr.get("visit_duration", "")
-        if b_dur != a_dur:
-            details.append({
-                "field": "游览时长",
-                "item_name": name,
-                "before": b_dur,
-                "after": a_dur,
-                "strategy": strategy_name,
-            })
-
-        # 检查时间段变化
-        b_slot = before_attr.get("visit_time_slot", "")
-        a_slot = after_attr.get("visit_time_slot", "")
-        if b_slot != a_slot:
-            details.append({
-                "field": "时间段",
-                "item_name": name,
-                "before": {"morning": "上午", "afternoon": "下午", "evening": "晚上"}.get(b_slot, b_slot),
-                "after": {"morning": "上午", "afternoon": "下午", "evening": "晚上"}.get(a_slot, a_slot),
-                "strategy": strategy_name,
-            })
-
-    # ---- 比较餐饮变化 ----
-    before_meals = {m.get("name", ""): m for m in plan_before.get("meals", []) if isinstance(m, dict)}
-    after_meals = {m.get("name", ""): m for m in plan_after.get("meals", []) if isinstance(m, dict)}
-
-    for name, after_meal in after_meals.items():
-        before_meal = before_meals.get(name)
-        if not before_meal:
-            continue
-        b_time = before_meal.get("start_time") or before_meal.get("time") or before_meal.get("meal_time", "")
-        a_time = after_meal.get("start_time") or after_meal.get("time") or after_meal.get("meal_time", "")
-        if b_time != a_time:
-            details.append({
-                "field": "用餐时间",
-                "item_name": name,
-                "before": b_time,
-                "after": a_time,
-                "strategy": strategy_name,
-            })
-
-    if not details:
-        details.append({
-            "field": "调整策略",
-            "item_name": "行程",
-            "before": "冲突状态",
-            "after": f"执行{strategy_name}",
-            "strategy": strategy_name,
-        })
-
-    return details
 
 
-# ==================== 6. 主协商流程 ====================
 
 def _global_reshuffle(day_plans: List[dict], structured_requirement: dict) -> None:
-    """
-    全局重排 - 按地理聚类重新分配景点到各天
-
-    当局部修复策略全部失败时，此函数按景点的地理坐标聚类，
-    将相近的景点分配到同一天，跨越距离阈值的景点拆分到不同天。
-
-    Args:
-        day_plans: 每日行程列表（就地修改）
-        structured_requirement: 结构化需求
-    """
-    import math
-
-    if len(day_plans) <= 1:
-        return
-
-    # 收集所有天的所有景点
-    all_attractions = []
-    for plan in day_plans:
-        for attr in plan.get("attractions", []):
-            if isinstance(attr, dict):
-                all_attractions.append(copy.deepcopy(attr))
-
-    if not all_attractions:
-        return
-
-    # 计算每个景点与其他景点的距离
-    def haversine_km(loc1, loc2):
-        if not loc1 or not loc2:
-            return float('inf')
-        lat1 = loc1.get("lat") or loc1.get("latitude", 0)
-        lng1 = loc1.get("lng") or loc1.get("longitude") or loc1.get("lon", 0)
-        lat2 = loc2.get("lat") or loc2.get("latitude", 0)
-        lng2 = loc2.get("lng") or loc2.get("longitude") or loc2.get("lon", 0)
-        if not lat1 or not lng1 or not lat2 or not lng2:
-            return float('inf')
-        try:
-            lat1, lng1, lat2, lng2 = float(lat1), float(lng1), float(lat2), float(lng2)
-        except (TypeError, ValueError):
-            return float('inf')
-        R = 6371
-        dlat = math.radians(lat2 - lat1)
-        dlng = math.radians(lng2 - lng1)
-        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        return R * c
-
-    # 使用简单的聚类：第一个景点作为第1天的锚点，对剩余景点：
-    # 如果距离当前天所有景点 < 50km，则归入同一天，否则尝试下一天
-    num_days = len(day_plans)
-    daily_groups = [[] for _ in range(num_days)]
-
-    for attr in all_attractions:
-        loc = attr.get("location", {})
-        best_day = 0
-        best_score = -float('inf')
-
-        for d_idx in range(num_days):
-            if not daily_groups[d_idx]:
-                score = 0  # 空天优先分配
-            else:
-                # 计算与此天所有景点的平均距离
-                avg_dist = sum(
-                    haversine_km(loc, a.get("location", {}))
-                    for a in daily_groups[d_idx]
-                ) / len(daily_groups[d_idx])
-                score = -avg_dist  # 距离越小得分越高
-
-            # 如果得分更高或天数已满则分配
-            if score > best_score or (score == best_score and d_idx < best_day):
-                best_score = score
-                best_day = d_idx
-
-        # 确保各天景点数均衡
-        if len(daily_groups[best_day]) >= len(all_attractions) // num_days + 1:
-            for d_idx in range(num_days):
-                if len(daily_groups[d_idx]) < len(all_attractions) // num_days:
-                    best_day = d_idx
-                    break
-
-        daily_groups[best_day].append(attr)
-
-    # 将聚类结果写回 day_plans
-    for d_idx in range(num_days):
-        if d_idx < len(day_plans):
-            day_plans[d_idx]["attractions"] = daily_groups[d_idx]
-
-    logger.info(f"[协商] 全局重排完成: 将{len(all_attractions)}个景点重新分配到{num_days}天")
+    """全局重排（委托给 negotiation_core 的局部搜索优化）"""
+    from src.services.negotiation_core.negotiation_orchestrator import local_search_reshuffle as _core_reshuffle
+    _core_reshuffle(day_plans, structured_requirement)
 
 
-# ==================== 4B. 组合修复辅助函数 ====================
 
 
 async def negotiate_and_fix(
@@ -1784,686 +1573,36 @@ async def negotiate_and_fix(
     use_real_traffic: bool = False
 ) -> dict:
     """
-    核心协商流程：多轮迭代的冲突检测→路线优化→修复→再检测→再修复
+    核心协商流程：委托给 NegotiationOrchestrator
 
-    流程:
-      循环最多max_iterations次:
-        1. 调用路线优化（如果启用），优化景点排序并更新时间分配（含2-opt后优化）
-        2. 调用 check_itinerary_conflicts 检测冲突
-        3. 如果没有严重冲突，终止
-        4. 对有冲突的每一天，按优先级尝试 策略1→策略2(开放时间适配)→策略3→策略4→策略5→策略6→组合修复→策略7→策略8→策略9
-        5. 如果本轮没有修复任何冲突，先触发全局重排，连续两轮无修复+仍有error再终止
+    1. 注册默认策略（首次运行时）
+    2. 调用 orchestrator.negotiate_and_fix()
+    3. 返回协商结果
 
-    Args:
-        day_plans: 每日行程列表
-        structured_requirement: 结构化需求
-        backup_data: 备选景点数据 {"attractions": [...]}
-        max_iterations: 最大迭代次数
-        optimize_route: 是否在每轮迭代开始时执行路线优化
-        use_real_traffic: 是否使用真实交通数据（需配置AMAP_API_KEY）
-
-    Returns:
-        {
-            "day_plans": 修复后的行程,
-            "negotiation_log": 协商日志,
-            "iteration_count": 实际迭代次数,
-            "fully_resolved": bool 是否完全解决
-        }
+    此函数保持对外接口不变（兼容全量重构前的调用方）。
+    所有具体实现已移至 src/services/negotiation_core/
     """
-    from src.routes.validate import check_itinerary_conflicts
-    from src.services.negotiation_event_bus import agent_message_bus, AgentMessageType
-    from src.services.negotiation_utility import compute_utility_dict
+    from src.services.negotiation_core.negotiation_orchestrator import negotiation_orchestrator
+    from src.services.negotiation_strategies import strategy_selector, register_default_strategies
 
-    # 【P1增强】记录策略选择器统计信息（第一轮时输出）
-    if strategy_selector.registry.strategy_count > 0 and not hasattr(negotiate_and_fix, '_strategies_registered'):
-        negotiate_and_fix._strategies_registered = True  # type: ignore
-        logger.info(f"[协商] 动态策略选择器已就绪，共{strategy_selector.registry.strategy_count}个策略")
-
-    # 生成唯一 sessionId（复用 taskId 或产生新的）
-    session_id = structured_requirement.get("task_id") or str(uuid.uuid4())
-
-    negotiation_log = []
-    backup_attractions = list((backup_data or {}).get("attractions", []))
-    current_plans = copy.deepcopy(day_plans)
-
-    # 重置连续无修复计数（确保跨多次调用各自独立）
-    negotiate_and_fix._no_fix_streak = 0  # type: ignore
-
-    # 发布 CFP 事件（协商开始）
-    print(f"[协商诊断] 1. 开始协商，session_id={session_id}")
-    print(f"[协商诊断] 2. event_bus 类型: {type(event_bus).__name__}, id: {id(event_bus)}")
-    print(f"[协商诊断] 2b. event_bus 版本: {'增强版(含WebSocket+持久化+Agent通信)' if hasattr(event_bus, 'ws_manager') else '旧版'}")
-    cfp_event = create_negotiation_event(
-        event_type=NegotiationEventType.CFP,
-        session_id=session_id,
-        from_agent="dispatcher",
-        to_agent="all_vehicles",
-        phase=NegotiationPhase.CFP,
-        proposal={"description": f"开始协商修复行程冲突（共{max_iterations}轮）"},
-        utility={"dispatcher": 1.0, "vehicle": 1.0},
-    )
-    print(f"[协商诊断] 3. CFP事件ID: {cfp_event.get('eventId')}")
-    print(f"[协商诊断] 4. 即将发布CFP...")
-    await event_bus.publish(session_id, cfp_event)
-    print(f"[协商诊断] 5. CFP发布后, event_bus 中 session 数: {len(event_bus._session_logs)}")
-    print(f"[协商诊断] 6. 当前 session 事件数: {len(event_bus.get_session_log(session_id))}")
-
-        # ========== 【P1增强】注册默认策略到策略选择器 ==========
+    # 注册默认策略（首次运行时）
     if strategy_selector.registry.strategy_count == 0:
         register_default_strategies(strategy_selector)
-        logger.info(f"[协商] 已注册{strategy_selector.registry.strategy_count}个策略到动态策略选择器")
+        logger.info(f"[协商] 已在入口注册{strategy_selector.registry.strategy_count}个策略")
 
-    # ========== 【新增】Agent间通信：开始协商前通知所有Agent ==========
-    print(f"[协商诊断] 7. 广播协商开始消息给所有Agent...")
-    broadcast_responses = await agent_message_bus.broadcast(
-        from_agent="dispatcher",
-        message={
-            "type": AgentMessageType.COORDINATE_REQUEST,
-            "payload": {
-                "action": "negotiation_start",
-                "session_id": session_id,
-                "max_iterations": max_iterations,
-                "total_days": len(current_plans),
-                "total_attractions": sum(
-                    len(p.get("attractions", [])) for p in current_plans
-                ),
-            }
-        },
-        session_id=session_id,
+    return await negotiation_orchestrator.negotiate_and_fix(
+        day_plans=day_plans,
+        structured_requirement=structured_requirement,
+        backup_data=backup_data,
+        max_iterations=max_iterations,
+        optimize_route=optimize_route,
+        use_real_traffic=use_real_traffic,
     )
-    print(f"[协商诊断] 8. Agent广播响应: {list(broadcast_responses.keys()) if broadcast_responses else '无响应'}")
-    negotiation_log.append({
-        "iteration": 0,
-        "action": "广播协商开始",
-        "target": "all_agents",
-        "responses": list(broadcast_responses.keys()) if broadcast_responses else [],
-    })
-
-    for iteration in range(max_iterations):
-        logger.info(f"[协商] === 第 {iteration + 1} 轮 ===")
-
-        # === 策略0：每轮迭代开始前执行路线优化 ===
-        # 将路线优化融入协商循环中，使得：
-        #   1. 优化后的时间分配不会被后续协商策略无意义地覆盖
-        #   2. 如果优化产生了新冲突，同一轮就能检测并修复
-        #   3. 优化结果（景点排序）可以为后续时间平移等策略提供更好的基础
-        if optimize_route:
-            for d_idx in range(len(current_plans)):
-                plan_before = copy.deepcopy(current_plans[d_idx])
-                if use_real_traffic:
-                    current_plans[d_idx] = await optimize_real_route(
-                        current_plans[d_idx], mode="transit"
-                    )
-                else:
-                    current_plans[d_idx] = _simple_route_optimize(current_plans[d_idx])
-
-            # 收集所有天的 long_distance_warnings 并发布到事件总线
-            all_long_distance_warnings = []
-            for d_idx, plan in enumerate(current_plans):
-                warnings = plan.pop("_long_distance_warnings", None)
-                if warnings:
-                    for w in warnings:
-                        w["day"] = d_idx + 1
-                    all_long_distance_warnings.extend(warnings)
-            if all_long_distance_warnings:
-                route_preview = build_route_preview(vehicle_id="route_opt", coordinates=[])
-                route_preview["long_distance_warnings"] = all_long_distance_warnings
-                await event_bus.publish(session_id, create_negotiation_event(
-                    event_type=NegotiationEventType.COUNTER,
-                    session_id=session_id,
-                    from_agent="optimizer",
-                    to_agent="dispatcher",
-                    phase=NegotiationPhase.NEGOTIATE,
-                    proposal={
-                        "action": "路线优化完成",
-                        "long_distance_warnings": all_long_distance_warnings,
-                    },
-                    extra={"longDistanceWarning": True, "longDistanceSegments": all_long_distance_warnings},
-                    utility={"dispatcher": 0.85, "vehicle": 0.8},
-                    route_preview=route_preview,
-                ))
-                logger.info(f"[协商] 发现 {len(all_long_distance_warnings)} 个长距离路段，已发布警告")
-
-        validation = check_itinerary_conflicts(current_plans, structured_requirement) #type: ignore
-        conflicts = validation.get("conflicts", [])
-        has_error = any(c.get("severity") == "error" for c in conflicts)
-        
-        print(f"[协商诊断] 第{iteration+1}轮冲突检测: {len(conflicts)}个冲突, 其中error: {sum(1 for c in conflicts if c.get('severity')=='error')}, warning: {sum(1 for c in conflicts if c.get('severity')=='warning')}")
-        for c_idx, c in enumerate(conflicts):
-            print(f"[协商诊断]   冲突{c_idx+1}: [{c.get('severity')}] {c.get('description', '')[:80]}")
-
-        if not has_error:
-            logger.info(f"[协商] ✓ 第{iteration + 1}轮已无严重冲突")
-            negotiation_log.append({
-                "iteration": iteration + 1,
-                "action": "协商完成",
-                "remaining_conflicts": len(conflicts),
-                "all_resolved": True
-            })
-            # 发布 ACCEPT 事件
-            await event_bus.publish(session_id, create_negotiation_event(
-                event_type=NegotiationEventType.ACCEPT,
-                session_id=session_id,
-                from_agent="dispatcher",
-                to_agent="all_vehicles",
-                phase=NegotiationPhase.FINALIZING,
-                proposal={"final_conflicts": len(conflicts)},
-                utility={"dispatcher": 0.95, "vehicle": 0.95},
-            ))
-            # 发布 FINALIZED 事件
-            await event_bus.publish(session_id, create_negotiation_event(
-                event_type=NegotiationEventType.FINALIZED,
-                session_id=session_id,
-                from_agent="dispatcher",
-                to_agent="all_vehicles",
-                phase=NegotiationPhase.FINALIZED,
-                proposal={"iteration_count": iteration + 1},
-                utility={"dispatcher": 1.0, "vehicle": 1.0},
-            ))
-            return {
-                "day_plans": current_plans,
-                "negotiation_log": negotiation_log,
-                "iteration_count": iteration + 1,
-                "fully_resolved": True,
-                "validation": validation,
-                "negotiation_events": event_bus.get_session_log(session_id),
-            }
-
-        # 按天分组冲突
-        day_conflicts = {}
-        for c in conflicts:
-            day = c.get("day", 1)
-            day_conflicts.setdefault(day, []).append(c)
-
-        any_fixed = False
-
-        for day_num, day_conflict_list in day_conflicts.items():
-            day_idx = day_num - 1
-            if day_idx < 0 or day_idx >= len(current_plans):
-                continue
-
-            # 对当天的所有冲突逐一尝试修复策略（按优先级）
-            # 修复一个冲突后继续处理下一个，直到所有冲突都遍历完毕
-            for conflict in day_conflict_list:
-                if not isinstance(conflict, dict):
-                    continue
-
-                # 如果当前 day_plan 已经被前面的冲突修复改动了，先从 current_plans 获取最新快照
-                plan_before_snapshot = copy.deepcopy(current_plans[day_idx]) if day_idx < len(current_plans) else None
-
-                # --- 发布 PROPOSE 事件：开始尝试修复 ---
-                await event_bus.publish(session_id, create_negotiation_event(
-                    event_type=NegotiationEventType.PROPOSE,
-                    session_id=session_id,
-                    from_agent="dispatcher",
-                    to_agent=f"day_{day_num}",
-                    phase=NegotiationPhase.NEGOTIATE,
-                    proposal={
-                        "conflict_type": conflict.get("type", ""),
-                        "conflict_description": conflict.get("description", ""),
-                        "iteration": iteration + 1,
-                        "day": day_num,
-                    },
-                    utility={"dispatcher": max(0.8 - iteration * 0.1, 0.3)},
-                    route_preview=build_route_preview(
-                        vehicle_id=f"day{day_num}",
-                        coordinates=[],
-                    ),
-                ))
-
-                # ========== 【P0改进】使用动态策略选择器 + LLM仲裁者 ==========
-                # 替换原有的15个硬编码 if/elif 策略块，
-                # 改用 strategy_selector 根据冲突类型动态推荐策略，
-                # 所有确定性策略失败后调用 LLM仲裁者 作为兜底。
-                conflict_fixed = False
-                conflict_type = conflict.get("type", "")
-                conflict_activities = conflict.get("activities", [])
-
-                # ========== 【P0改进】Agent征询环节 ==========
-                # 在尝试策略之前，先向相关Agent广播征询意见，
-                # 利用Agent的领域知识辅助协商决策
-                try:
-                    # 向所有Agent广播冲突信息，征询建议
-                    agent_query_payload = {
-                        "action": "conflict_consultation",
-                        "session_id": session_id,
-                        "conflict_type": conflict_type,
-                        "conflict_description": conflict.get("description", ""),
-                        "conflict_activities": conflict_activities,
-                        "day_num": day_num,
-                        "day_plan_summary": {
-                            "attractions": [
-                                a.get("name", "") for a in current_plans[day_idx].get("attractions", [])
-                                if isinstance(a, dict)
-                            ],
-                            "meals": [
-                                m.get("name", "") for m in current_plans[day_idx].get("meals", [])
-                                if isinstance(m, dict)
-                            ],
-                        },
-                        "iteration": iteration + 1,
-                    }
-
-                    consultation_responses = await agent_message_bus.broadcast(
-                        from_agent="dispatcher",
-                        message={
-                            "type": AgentMessageType.PREFERENCE_QUERY,
-                            "payload": agent_query_payload,
-                        },
-                        session_id=session_id,
-                    )
-
-                    # 处理Agent的反馈
-                    agent_suggestions = []
-                    if consultation_responses:
-                        for agent_id, response in consultation_responses.items():
-                            if response and isinstance(response, dict):
-                                suggestion = response.get("suggestion") or response.get("response", "")
-                                if suggestion:
-                                    agent_suggestions.append({
-                                        "agent_id": agent_id,
-                                        "suggestion": str(suggestion)[:100],
-                                    })
-                                    logger.info(
-                                        f"[协商] Agent {agent_id} 建议: {str(suggestion)[:100]}"
-                                    )
-
-                    if agent_suggestions:
-                        negotiation_log.append({
-                            "iteration": iteration + 1, "day": day_num,
-                            "action": "Agent征询",
-                            "target": conflict_activities,
-                            "type": conflict_type,
-                            "agent_suggestions": agent_suggestions,
-                        })
-
-                        # 发布征询事件
-                        await event_bus.publish(session_id, create_negotiation_event(
-                            event_type=NegotiationEventType.AGENT_MSG,
-                            session_id=session_id,
-                            from_agent="dispatcher",
-                            to_agent="all_agents",
-                            phase=NegotiationPhase.NEGOTIATE,
-                            proposal={
-                                "action": "Agent征询",
-                                "conflict_type": conflict_type,
-                                "responses": agent_suggestions,
-                            },
-                            extra={"agentConsultation": True, "agentResponses": agent_suggestions},
-                        ))
-                except Exception as e:
-                    logger.warning(f"[协商] Agent征询环节异常（非致命）: {e}")
 
 
-                # 步骤1: 用动态策略选择器获取适用于该冲突类型的策略列表
-                selected_strategies = strategy_selector.select_strategies(
-                    conflict_type=conflict_type,
-                    top_n=8,
-                )
+# ==================== ⚠️ 以下为旧入口函数（保留兼容） ====================
 
-                if selected_strategies:
-                    logger.info(
-                        f"[协商] 第{iteration + 1}轮, day{day_num}, "
-                        f"冲突类型={conflict_type}, "
-                        f"策略选择器推荐: {[s['name'] for s in selected_strategies]}"
-                    )
-                else:
-                    logger.info(
-                        f"[协商] 第{iteration + 1}轮, day{day_num}, "
-                        f"冲突类型={conflict_type}: 策略选择器无推荐, 回退默认策略"
-                    )
-                    # 如果策略选择器没有推荐，回退到默认策略集
-                    selected_strategies = []
-                    registry = strategy_selector.registry
-                    for fallback_name in [
-                        "strategy_time_shift", "strategy_adjust_opening_hours",
-                        "strategy_swap_time_slot", "strategy_compress_duration",
-                        "strategy_replace_activity", "strategy_cross_day_move",
-                        "strategy_closed_day_resolve", "strategy_transport_split",
-                        "strategy_geo_distance_split", "strategy_geo_distance_replace",
-                    ]:
-                        if fallback_name in registry._strategies:
-                            info = registry._strategies[fallback_name]
-                            selected_strategies.append({
-                                "name": fallback_name,
-                                "func": info["func"],
-                                "priority": info["priority"],
-                                "description": info.get("description", ""),
-                                "is_async": info.get("is_async", False),
-                                "conflict_types": info.get("conflict_types", []),
-                            })
-                    # 如果回退列表仍为空，尝试所有已注册策略
-                    if not selected_strategies:
-                        all_names = sorted(registry._strategies.keys(),
-                            key=lambda n: registry._strategies[n]["priority"])
-                        for name in all_names:
-                            info = registry._strategies[name]
-                            selected_strategies.append({
-                                "name": name,
-                                "func": info["func"],
-                                "priority": info["priority"],
-                                "description": info.get("description", ""),
-                                "is_async": info.get("is_async", False),
-                                "conflict_types": info.get("conflict_types", []),
-                            })
-                        logger.info(
-                            f"[协商] 第{iteration + 1}轮, day{day_num}: "
-                            f"尝试所有 {len(selected_strategies)} 个已注册策略"
-                        )
-                # 步骤2: 按策略选择器推荐的顺序逐一尝试策略
-                for strategy_info in selected_strategies:
-                    if conflict_fixed:
-                        break
-
-                    strategy_name = strategy_info["name"]
-
-                    plan_before_snapshot = copy.deepcopy(current_plans[day_idx])
-                    plans_before_snapshot_multi = copy.deepcopy(current_plans)
-
-                    try:
-                        result = None
-
-                        if strategy_name == "strategy_time_shift":
-                            result = strategy_time_shift(current_plans[day_idx], conflict, margin=15)
-                        elif strategy_name == "strategy_adjust_opening_hours":
-                            result = strategy_adjust_opening_hours(current_plans[day_idx], conflict)
-                        elif strategy_name == "strategy_swap_time_slot":
-                            result = strategy_swap_time_slot(current_plans[day_idx], conflict)
-                        elif strategy_name == "strategy_compress_duration":
-                            result = strategy_compress_duration(current_plans[day_idx], conflict)
-                        elif strategy_name == "strategy_replace_activity":
-                            if backup_attractions:
-                                result = strategy_replace_activity(
-                                    current_plans[day_idx], conflict, backup_attractions
-                                )
-                        elif strategy_name == "strategy_cross_day_move":
-                            if len(current_plans) > 1:
-                                result = strategy_cross_day_move(current_plans, conflict) #type: ignore
-                        elif strategy_name == "strategy_closed_day_resolve":
-                            if len(current_plans) > 1 and conflict_type == "closed_day":
-                                result = strategy_closed_day_resolve(
-                                    current_plans, conflict, structured_requirement #type: ignore
-                                )
-                        elif strategy_name == "strategy_transport_split":
-                            if conflict_type == "time_overlap" and conflict_activities:
-                                transport = current_plans[day_idx].get("transport")
-                                if isinstance(transport, dict):
-                                    transport_name = f"前往{transport.get('to', '')}"
-                                    meals = current_plans[day_idx].get("meals", [])
-                                    for meal in meals:
-                                        if isinstance(meal, dict):
-                                            meal_name = meal.get("name", "")
-                                            if transport_name in conflict_activities and meal_name in conflict_activities:
-                                                result = strategy_transport_split(current_plans[day_idx], conflict)
-                                                break
-                        elif strategy_name == "strategy_geo_distance_split":
-                            if conflict_type in ("geo_distance",) and len(current_plans) > 1:
-                                result = strategy_geo_distance_split(
-                                    current_plans, conflict, structured_requirement #type: ignore
-                                )
-                        elif strategy_name == "strategy_geo_distance_replace":
-                            if conflict_type in ("geo_distance",) and backup_attractions:
-                                result = strategy_geo_distance_replace(
-                                    current_plans[day_idx], conflict, backup_attractions
-                                )
-
-                        # 处理策略结果
-                        if result is not None and result is not False:
-                            is_multi_day = strategy_name in (
-                                "strategy_cross_day_move", "strategy_closed_day_resolve",
-                                "strategy_geo_distance_split",
-                            )
-
-                            if is_multi_day and len(current_plans) > 1:
-                                adjustments = []
-                                for d_idx in range(len(current_plans)):
-                                    old_plan = plans_before_snapshot_multi[d_idx] if d_idx < len(plans_before_snapshot_multi) else {}
-                                    new_plan = result[d_idx] if d_idx < len(result) else {}
-                                    adj = _build_adjustment_details(old_plan, new_plan, strategy_name)
-                                    adjustments.extend(adj)
-                                current_plans = result
-                            else:
-                                if isinstance(result, dict) and result.get("attractions") is not None:
-                                    current_plans[day_idx] = result
-                                    adjustments = _build_adjustment_details(plan_before_snapshot, result, strategy_name) if plan_before_snapshot else []
-                                else:
-                                    adjustments = []
-
-                            # 记录日志
-                            action_name = strategy_name.replace("strategy_", "").replace("_", "·")
-                            negotiation_log.append({
-                                "iteration": iteration + 1, "day": day_num,
-                                "action": f"动态策略-{action_name}",
-                                "target": conflict_activities,
-                                "type": conflict_type,
-                                "adjustments": adjustments,
-                            })
-
-                            # 发布事件
-                            target_agent = "all_vehicles" if is_multi_day else f"day_{day_num}"
-                            await event_bus.publish(session_id, create_negotiation_event(
-                                event_type=NegotiationEventType.COUNTER,
-                                session_id=session_id,
-                                from_agent="dispatcher",
-                                to_agent=target_agent,
-                                phase=NegotiationPhase.NEGOTIATE,
-                                proposal={
-                                    "action": f"动态策略-{action_name}",
-                                    "target": conflict_activities,
-                                    "adjustments": adjustments,
-                                },
-                                utility={"dispatcher": 0.6, "vehicle": 0.5},
-                                route_preview=build_route_preview(vehicle_id=f"day{day_num}", coordinates=[]),
-                            ))
-
-                            strategy_selector.record_success(strategy_name)
-                            conflict_fixed = True
-                        else:
-                            strategy_selector.record_failure(strategy_name)
-
-                    except Exception as e:
-                        logger.warning(f"[协商] 策略 {strategy_name} 执行异常: {e}")
-                        strategy_selector.record_failure(strategy_name)
-                        continue
-
-                # ========== 【P0改进】步骤3: 所有确定性策略失败 → 调用LLM仲裁者 ==========
-                if not conflict_fixed:
-                    logger.info(
-                        f"[协商] 第{iteration + 1}轮, day{day_num}: "
-                        f"所有确定性策略失败，尝试LLM仲裁者..."
-                    )
-                    try:
-                        llm_result = await llm_arbiter.arbitrate(
-                            day_plans=current_plans, #type: ignore
-                            structured_requirement=structured_requirement,
-                            conflicts=[conflict],
-                            negotiation_log=negotiation_log,
-                            session_id=session_id,
-                        )
-
-                        if llm_result and llm_result.get("day_plans"):
-                            current_plans = llm_result["day_plans"]
-                            adjustments = llm_result.get("adjustments", [])
-                            analysis = llm_result.get("analysis", "")
-                            solution_type = llm_result.get("solution_type", "")
-
-                            negotiation_log.append({
-                                "iteration": iteration + 1, "day": day_num,
-                                "action": f"LLM仲裁({solution_type})",
-                                "target": conflict_activities,
-                                "type": conflict_type,
-                                "adjustments": adjustments,
-                                "analysis": analysis,
-                            })
-
-                            await event_bus.publish(session_id, create_negotiation_event(
-                                event_type=NegotiationEventType.COUNTER,
-                                session_id=session_id,
-                                from_agent="llm_arbiter",
-                                to_agent="dispatcher",
-                                phase=NegotiationPhase.NEGOTIATE,
-                                proposal={
-                                    "action": f"LLM仲裁({solution_type})",
-                                    "analysis": analysis,
-                                    "adjustments": adjustments,
-                                },
-                                utility={"dispatcher": 0.4, "vehicle": 0.4},
-                            ))
-
-                            logger.info(
-                                f"[协商] ✅ LLM仲裁成功: {analysis}, "
-                                f"生成{len(adjustments)}项调整"
-                            )
-                            conflict_fixed = True
-                        else:
-                            logger.info(
-                                f"[协商] ⚠️ LLM仲裁未返回有效方案"
-                            )
-                    except Exception as e:
-                        logger.warning(f"[协商] LLM仲裁异常: {e}")
-
-                # 步骤4: 记录本轮结果
-                if conflict_fixed:
-                    any_fixed = True
-                    logger.info(
-                        f"[协商] ✅ 第{iteration + 1}轮, day{day_num}: "
-                        f"冲突已解决 (冲突类型={conflict_type})"
-                    )
-                else:
-                    logger.info(
-                        f"[协商] ❌ 第{iteration + 1}轮, day{day_num}: "
-                        f"所有策略(含LLM)均失败 (冲突类型={conflict_type})"
-                    )
-        if not any_fixed:
-            # === 改进的终止条件 ===
-            # 记录本轮无修复
-            no_fix_streak = getattr(negotiate_and_fix, "_no_fix_streak", 0) + 1
-            negotiate_and_fix._no_fix_streak = no_fix_streak #type: ignore
-
-            # 检测是否仍有error冲突
-            current_v = check_itinerary_conflicts(current_plans, structured_requirement) #type: ignore
-            has_remaining_errors = any(c.get("severity") == "error" for c in current_v.get("conflicts", []))
-
-            if has_remaining_errors and no_fix_streak == 1:
-                # 第一轮无修复时，不直接终止，先触发全局重排（按地理分区重新分配）
-                logger.info(f"[协商] 第{iteration + 1}轮无修复，触发全局重排尝试...")
-                _global_reshuffle(current_plans, structured_requirement) #type: ignore
-                negotiation_log.append({
-                    "iteration": iteration + 1,
-                    "action": "全局重排（无有效局部修复策略）"
-                })
-                await event_bus.publish(session_id, create_negotiation_event(
-                    event_type=NegotiationEventType.COUNTER,
-                    session_id=session_id,
-                    from_agent="dispatcher",
-                    to_agent="all_vehicles",
-                    phase=NegotiationPhase.NEGOTIATE,
-                    proposal={"action": "全局重排（按地理聚类重新分配）"},
-                    utility={"dispatcher": 0.35, "vehicle": 0.35},
-                ))
-            elif has_remaining_errors and no_fix_streak >= 2:
-                # 连续两轮无任何修复且仍有error冲突，触发终止
-                logger.warning(f"[协商] 第{iteration + 1}轮无任何修复（连续{no_fix_streak}轮），提前终止")
-                negotiation_log.append({
-                    "iteration": iteration + 1,
-                    "action": f"提前终止（连续{no_fix_streak}轮无有效修复策略）"
-                })
-                await event_bus.publish(session_id, create_negotiation_event(
-                    event_type=NegotiationEventType.REJECT,
-                    session_id=session_id,
-                    from_agent="dispatcher",
-                    to_agent="all_vehicles",
-                    phase=NegotiationPhase.FINALIZING,
-                    proposal={"reason": f"连续{no_fix_streak}轮无有效修复策略"},
-                    utility={"dispatcher": 0.3, "vehicle": 0.3},
-                ))
-                break
-            else:
-                # 无error冲突，继续迭代
-                logger.info(f"[协商] 第{iteration + 1}轮无修复，但已无error冲突，继续迭代")
-        else:
-            # 有修复，重置连续无修复计数
-            negotiate_and_fix._no_fix_streak = 0  # type: ignore
-
-        # 验证修复效果
-        remaining = len(check_itinerary_conflicts(current_plans, structured_requirement) #type: ignore
-                        .get("conflicts", []))
-        logger.info(f"[协商] 第{iteration + 1}轮后剩余 {remaining} 个冲突")
-
-    # 最终校验
-    final_v = check_itinerary_conflicts(current_plans, structured_requirement) #type: ignore
-    final_error = any(c.get("severity") == "error" for c in final_v.get("conflicts", []))
-
-    # 收集最终 long_distance_warnings（增强：检查所有路段交通耗时是否超过阈值）
-    transport_time_threshold = structured_requirement.get("transport_time_threshold_min", 90)
-    final_long_distance_warnings = []
-    for d_idx, plan in enumerate(current_plans):
-        attrs = plan.get("attractions", [])
-        for i in range(len(attrs) - 1):
-            loc_i = attrs[i].get("location", {})
-            loc_j = attrs[i+1].get("location", {})
-            dist = _haversine_distance(loc_i, loc_j)
-            # 估算交通耗时（按25km/h公交速度，与 get_real_transport_time fallback保持一致）
-            estimated_duration_min = int((dist / 25) * 60) if dist < float('inf') else 999
-            if estimated_duration_min > transport_time_threshold:
-                final_long_distance_warnings.append({
-                    "day": d_idx + 1,
-                    "from": attrs[i].get("name", ""),
-                    "to": attrs[i+1].get("name", ""),
-                    "distance_km": round(dist, 1),
-                    "estimated_duration_min": estimated_duration_min,
-                    "threshold_min": transport_time_threshold,
-                })
-
-    # 发布最终完成事件
-    await event_bus.publish(session_id, create_negotiation_event(
-        event_type=NegotiationEventType.FINALIZED,
-        session_id=session_id,
-        from_agent="dispatcher",
-        to_agent="all_vehicles",
-        phase=NegotiationPhase.FINALIZED,
-        proposal={
-            "fully_resolved": not final_error,
-            "final_conflicts": len(final_v.get("conflicts", [])),
-            "long_distance_warnings": final_long_distance_warnings,
-        },
-        extra={"longDistanceWarning": len(final_long_distance_warnings) > 0},
-        utility=compute_utility_dict(current_plans, structured_requirement), #type: ignore
-    ))
-
-    # ========== 【新增】最终通知所有Agent ==========
-    final_responses = await agent_message_bus.broadcast(
-        from_agent="dispatcher",
-        message={
-            "type": AgentMessageType.SCHEDULE_PROPOSAL,
-            "payload": {
-                "action": "negotiation_complete",
-                "session_id": session_id,
-                "fully_resolved": not final_error,
-                "total_conflicts": len(final_v.get("conflicts", [])),
-                "final_plans_count": len(current_plans),
-            }
-        },
-        session_id=session_id,
-    )
-    negotiation_log.append({
-        "iteration": max_iterations,
-        "action": "广播协商完成",
-        "fully_resolved": not final_error,
-        "agent_responses": list(final_responses.keys()) if final_responses else [],
-    })
-
-    return {
-        "day_plans": current_plans,
-        "negotiation_log": negotiation_log,
-        "iteration_count": max_iterations,
-        "fully_resolved": not final_error,
-        "validation": final_v,
-        "negotiation_events": event_bus.get_session_log(session_id),
-    }
-
-
-# ==================== 6. 对外入口 ====================
+import warnings as _warnings
 
 async def full_negotiation_pipeline(
     agent_results: dict,
@@ -2472,19 +1611,11 @@ async def full_negotiation_pipeline(
     use_real_traffic: bool = False
 ) -> dict:
     """
-    完整协商流水线（供路由层调用的入口函数）
+    [已废弃] 完整协商流水线 — 请改用 negotiate_and_fix()
 
-    流水线:
-      第1步: 智能体结果整合为每日行程
-      第2步: 路线优化（简版纬度排序 或 真实交通贪心算法）
-      第3步: 多轮协商修复冲突
-      第4步: 返回最终结果
-
-    Args:
-        agent_results: 各智能体返回数据
-        structured_requirement: 结构化需求
-        optimize_route: 是否做路线优化
-        use_real_traffic: 是否使用真实交通数据
+    此函数仅保留对外兼容，新代码应直接：
+      1. 调用 integrate_agent_results_to_daily_plans() 整合行程
+      2. 调用 negotiate_and_fix() 协商修复
 
     Returns:
         {
@@ -2494,9 +1625,14 @@ async def full_negotiation_pipeline(
             "final_validation": {...}
         }
     """
+    _warnings.warn(
+        "full_negotiation_pipeline is deprecated, use negotiate_and_fix() directly",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from src.routes.integration import integrate_agent_results_to_daily_plans
 
-    # 第1步：初始整合
+        # 第1步：初始整合
     logger.info("[协商] 第1步: 智能体结果整合")
     day_plans = integrate_agent_results_to_daily_plans(
         agent_results, structured_requirement
@@ -2534,13 +1670,49 @@ async def full_negotiation_pipeline(
     except Exception as e:
         logger.warning(f"[协商] Agent初始化失败（非致命）: {e}")
 
+    # ========== 【T1增强】将Agent推荐结果写入共享信息池 ==========
+    try:
+        from src.services.negotiation_event_bus import agent_message_bus
+        session_id = structured_requirement.get("task_id") or str(hash(str(agent_results)))
+        ctx = agent_message_bus.get_shared_context(session_id)
+        
+        # 写入景点推荐（仅当有实际推荐且尚未写入时）
+        if agent_results.get("attraction", {}).get("attractions"):
+            ctx["attractions_recommendations"] = agent_results["attraction"]["attractions"]
+            logger.info(f"[协商] 共享信息池: 写入 {len(agent_results['attraction']['attractions'])} 个景点推荐")
+        
+        # 写入美食推荐
+        food_data = agent_results.get("food", {})
+        restaurants = food_data.get("restaurants") or food_data.get("items", [])
+        if restaurants:
+            ctx["food_recommendations"] = restaurants
+            logger.info(f"[协商] 共享信息池: 写入 {len(restaurants)} 个美食推荐")
+        
+        # 写入交通推荐
+        transport_data = agent_results.get("transport", {})
+        transport_items = transport_data.get("data", {}).get("items", [])
+        if transport_items:
+            ctx["transport_recommendations"] = transport_items
+            logger.info(f"[协商] 共享信息池: 写入 {len(transport_items)} 个交通方案")
+        
+        # 写入住宿推荐
+        hotel_data = agent_results.get("hotel", {})
+        hotels = hotel_data.get("data", {}).get("items", []) or hotel_data.get("hotels", [])
+        if hotels:
+            ctx["hotel_recommendations"] = hotels
+            logger.info(f"[协商] 共享信息池: 写入 {len(hotels)} 个住宿推荐")
+        
+        # 写入整合后的 day_plans 供 Agent 咨询时参考
+        ctx["integrated_day_plans"] = day_plans
+        ctx["structured_requirement"] = structured_requirement
+        
+        logger.info(f"[协商] 共享信息池已同步: session={session_id}")
+    except Exception as e:
+        logger.warning(f"[协商] 共享信息池写入失败（非致命）: {e}")
+
     # 第3步：多轮协商
     logger.info("[协商] 第2步: 多轮协商修复（含路线优化）")
 
-    #2026.6.16 啊啊啊啊啊真的好难改啊，厚礼蟹
-    if strategy_selector.registry.strategy_count == 0:
-        register_default_strategies(strategy_selector)
-        logger.info(f"[协商] 已在入口注册{strategy_selector.registry.strategy_count}个策略")
     result = await negotiate_and_fix(
         day_plans,
         structured_requirement,

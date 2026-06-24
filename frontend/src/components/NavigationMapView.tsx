@@ -654,7 +654,9 @@ const MultiRouteMapModal: React.FC<MultiRouteMapProps> = ({
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: '#f5f5f5', borderRadius: '8px', zIndex: 1,
           }}>
-            <Spin tip={loadError ? '加载中...' : '正在规划路线...'} />
+            <Spin>
+              <div style={{ padding: 30 }}>{loadError ? '加载中...' : '正在规划路线...'}</div>
+            </Spin>
           </div>
         )}
         <div ref={mapRef} style={{
@@ -833,13 +835,15 @@ const SingleRouteMapModal: React.FC<{
 
       {/* 地图 */}
       <div style={{ position: 'relative', minHeight: '200px' }}>
-        {loading && (
+      {loading && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: '#f5f5f5', borderRadius: '8px', zIndex: 1,
           }}>
-            <Spin tip="加载地图中..." />
+            <Spin>
+              <div style={{ padding: 30 }}>加载地图中...</div>
+            </Spin>
           </div>
         )}
         {loadError && !loading && !loadError.includes('地图加载失败') && (
@@ -1353,7 +1357,9 @@ const DayMultiRouteMap: React.FC<DayMultiRouteMapProps> = ({
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 background: '#f5f5f5', borderRadius: '8px', zIndex: 1,
               }}>
-                <Spin tip={loadError ? '加载中...' : '正在规划路线...'} />
+                <Spin>
+                  <div style={{ padding: 30 }}>{loadError ? '加载中...' : '正在规划路线...'}</div>
+                </Spin>
               </div>
             )}
             <div ref={mapRef} style={{

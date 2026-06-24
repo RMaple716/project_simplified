@@ -1,6 +1,6 @@
 """行程相关路由"""
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -47,12 +47,37 @@ async def get_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
     itinerary = ItineraryService.get_itinerary(db, itinerary_id)
     if itinerary is None:
         return error_response(code=404, msg="行程不存在")
-
     # 确保day_plans是有效的JSON数组
     day_plans = itinerary.day_plans if isinstance(itinerary.day_plans, list) else []
     
-    # 为每个day_plan添加必要的字段
-    for day_plan in day_plans:
+    # 获取关联的需求信息以获取城市名称和旅行天数
+    from src.models.db_models import UserRequirement
+    requirement = db.query(UserRequirement).filter(UserRequirement.requirement_id == itinerary.requirement_id).first()
+    city_name = requirement.requirement_data.get("city_name", "") if requirement else ""
+    travel_days = requirement.requirement_data.get("travel_days", 1) if requirement else 1
+
+    # 计算起始日期（从需求中的 travel_date 或当前日期推算）
+    base_date = None
+    if requirement:
+        raw_travel_date = requirement.requirement_data.get("travel_date", "")
+        if raw_travel_date:
+            try:
+                base_date = datetime.strptime(str(raw_travel_date)[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                base_date = None
+
+    # 为每个day_plan添加必要的字段（包括 date 和 day）
+    for i, day_plan in enumerate(day_plans):
+        # 确保 date 字段存在
+        if "date" not in day_plan or not day_plan.get("date"):
+            if base_date:
+                day_num = day_plan.get("day_number") or day_plan.get("day") or (i + 1)
+                day_plan["date"] = (base_date + timedelta(days=int(day_num) - 1)).isoformat()
+            else:
+                day_plan["date"] = f""
+        # 确保 day 字段存在
+        if "day" not in day_plan:
+            day_plan["day"] = day_plan.get("day_number", i + 1)
         # 确保attractions字段存在
         if "attractions" not in day_plan:
             day_plan["attractions"] = []
@@ -71,12 +96,6 @@ async def get_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
         # 确保notes字段存在
         if "notes" not in day_plan:
             day_plan["notes"] = ""
-    
-    # 获取关联的需求信息以获取城市名称和旅行天数
-    from src.models.db_models import UserRequirement
-    requirement = db.query(UserRequirement).filter(UserRequirement.requirement_id == itinerary.requirement_id).first()
-    city_name = requirement.requirement_data.get("city_name", "") if requirement else ""
-    travel_days = requirement.requirement_data.get("travel_days", 1) if requirement else 1
 
     # 从 day_plans 中提取协商事件（已持久化）
     negotiation_events = []
@@ -101,6 +120,17 @@ async def get_itinerary(itinerary_id: str, db: Session = Depends(get_db)):
             "negotiation_events": negotiation_events,
             "status": itinerary.status,
             "is_favorite": itinerary.is_favorite,
+            "adjustments_summary": (
+                itinerary.adjustments_summary
+                if isinstance(itinerary.adjustments_summary, list)
+                else []
+            ),
+            "version_history": (
+                itinerary.version_history
+                if isinstance(itinerary.version_history, list)
+                else []
+            ),
+            "user_options": ["accept", "adjust", "reject"],
             "created_at": itinerary.created_at.isoformat() if itinerary.created_at is not None else None,
             "updated_at": itinerary.updated_at.isoformat() if itinerary.updated_at is not None else None
         },

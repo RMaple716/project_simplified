@@ -9,7 +9,7 @@ import smtplib
 from email.message import EmailMessage
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.database import get_db
 from src.models.db_models import User, PasswordResetToken
@@ -32,13 +32,15 @@ class RegisterRequest(BaseModel):
     email: str = Field(..., description="邮箱")
     password: str = Field(..., min_length=6, max_length=100, description="密码")
 
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", v):
             raise ValueError("邮箱格式不正确")
         return v
 
-    @validator("username")
+    @field_validator("username")
+    @classmethod
     def validate_username(cls, v):
         if not re.match(r"^[a-zA-Z0-9_\u4e00-\u9fa5]{2,50}$", v):
             raise ValueError("用户名只能包含中文、字母、数字和下划线")
@@ -53,7 +55,8 @@ class LoginRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: str = Field(..., description="注册邮箱")
 
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", v):
             raise ValueError("邮箱格式不正确")
@@ -65,7 +68,8 @@ class ResetPasswordRequest(BaseModel):
     email: str = Field(..., description="注册邮箱")
     new_password: str = Field(..., min_length=6, max_length=100, description="新密码")
 
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", v):
             raise ValueError("邮箱格式不正确")

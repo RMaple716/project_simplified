@@ -7,8 +7,11 @@
 3. ✅ 协商事件发布（参与协商流程）
 4. ✅ LLM驱动的消息响应（可基于大模型生成回复）
 """
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Callable, Awaitable
+
+logger = logging.getLogger(__name__)
 from src.services.deepseek_client import DeepSeekClient
 from src.services.negotiation_event_bus import (
     event_bus,
@@ -86,6 +89,10 @@ class BaseAgent(ABC):
         默认实现：记录日志并返回基本信息。
         子类可以重写此方法来实现特定的消息处理逻辑。
 
+        新增默认处理:
+        - evaluate_counter_proposal: 评估反提案（默认赞成）
+        - respond_to_condition: 回应条件反提案（默认接受）
+
         Args:
             message: {
                 "messageId": str,
@@ -102,6 +109,13 @@ class BaseAgent(ABC):
         """
         msg_type = message.get("type", "unknown")
         from_agent = message.get("fromAgent", "unknown")
+        payload = message.get("payload", {})
+
+        # === 【阶段B】新消息类型处理 ===
+        if payload.get("action") == "evaluate_counter_proposal":
+            return await self._handle_evaluate_counter_proposal(payload)
+        if payload.get("action") == "respond_to_condition":
+            return await self._handle_respond_to_condition(payload)
 
         print(f"  📬 Agent '{self.name}' 收到来自 '{from_agent}' 的消息: type={msg_type}")
 
@@ -110,6 +124,52 @@ class BaseAgent(ABC):
             "agent_id": self.agent_id,
             "ack": True,
             "original_type": msg_type,
+        }
+
+    async def _handle_evaluate_counter_proposal(self, payload: dict) -> dict:
+        """
+        【阶段B】评估其他Agent的反提案（基类默认实现）
+
+        子类可重写以提供领域特定的评估逻辑，包括附带条件反提案。
+
+        Returns:
+            {"vote": "approve"|"veto", "reason": "...", "conditional_adjustments": [...]}
+        """
+        proposal_author = payload.get("proposal_author", "unknown")
+        conflict_type = payload.get("conflict_type", "")
+        changes = payload.get("changes", "")
+
+        logger.info(
+            f"[{self.agent_id}] 评估 {proposal_author} 的反提案: "
+            f"冲突类型={conflict_type}, 默认赞成"
+        )
+        return {
+            "vote": "approve",
+            "agent_id": self.agent_id,
+            "reason": f"{self.agent_id} 默认接受此调整",
+        }
+
+    async def _handle_respond_to_condition(self, payload: dict) -> dict:
+        """
+        【阶段B】回应其他Agent提出的条件反提案（基类默认实现）
+
+        子类可重写以提供更精确的回应逻辑。
+        默认接受条件。
+
+        Returns:
+            {"accept_condition": True|False, "modified_adjustments": [...]}
+        """
+        condition_from = payload.get("condition_from", "unknown")
+        condition_reason = payload.get("condition_reason", "")
+        conditional_adjustments = payload.get("conditional_adjustments", [])
+
+        logger.info(
+            f"[{self.agent_id}] 收到 {condition_from} 的条件反提案: "
+            f"{condition_reason[:60]}, 默认接受"
+        )
+        return {
+            "accept_condition": True,
+            "agent_id": self.agent_id,
         }
 
     async def send_message(

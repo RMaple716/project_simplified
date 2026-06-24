@@ -64,7 +64,7 @@ export { nlpApi } from './nlp';
 export type { NLPRequest, NLPResponse } from './nlp';
 
 // 新增：天气API
-export { weatherApi } from './weather';
+export { weatherApi, amapWeatherApi, qweatherApi } from './weather';
 export type { CurrentWeather, ForecastDay, WeatherForecast } from './weather';
 
 // 新增：导航路线API
@@ -80,3 +80,4 @@ export type {
 // 新增：协商可视化API
 export { negotiationApi, extractEventsFromItinerary } from './negotiationApi';
 export type { NegotiationLogEntry, NegotiationResult } from './negotiationApi';
+
