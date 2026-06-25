@@ -41,10 +41,12 @@ const RequirementForm: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractedFields, setExtractedFields] = useState<string[]>([]);
-    const [showExtractSummary, setShowExtractSummary] = useState(false);
+  const [showExtractSummary, setShowExtractSummary] = useState(false);
   // 独立追踪 travel_days 值（绕过 Ant Design InputNumber 箭头修改不更新表单值的 bug）
   const [travelDaysValue, setTravelDaysValue] = useState<number | undefined>(3);
   const [travelerCountValue, setTravelerCountValue] = useState<number | undefined>(2);
+  const [budgetValue, setBudgetValue] = useState<number | undefined>(undefined);
+
 
   /** 高亮自动填充的字段，3秒后消退 */
   const highlightExtractedField = (fieldName: string) => {
@@ -87,6 +89,7 @@ const RequirementForm: React.FC = () => {
       }
       if (result.budget) {
         form.setFieldValue('total_budget', result.budget);
+        setBudgetValue(result.budget);
         filledFields.push('total_budget');
         highlightExtractedField('total_budget');
       }
@@ -150,6 +153,7 @@ const RequirementForm: React.FC = () => {
         }
         if (result.budget) {
           form.setFieldValue('total_budget', result.budget);
+          setBudgetValue(result.budget);
           filledFields.push('total_budget');
           highlightExtractedField('total_budget');
         }
@@ -239,12 +243,12 @@ const RequirementForm: React.FC = () => {
 
     setLoading(true);
     try {
-      const response = await requirementApi.submit({
+        const response = await requirementApi.submit({
         user_id: currentUserId,
         requirement: {
           city_name: values.city_name,
           travel_days: confirmedDays,
-          total_budget: values.total_budget,
+          total_budget: budgetValue ?? values.total_budget,
           travel_type: values.travel_type,
           travel_date: dateStr,
           preferences: values.preferences
@@ -266,7 +270,7 @@ const RequirementForm: React.FC = () => {
             structured_requirement: {
               city_name: values.city_name,
               travel_days: confirmedDays,
-              total_budget: values.total_budget,
+              total_budget: budgetValue ?? values.total_budget,
               travel_date: dateStr,
               traveler_count: travelerCountValue ?? values.traveler_count,
               preferences: values.preferences,
@@ -519,9 +523,14 @@ const RequirementForm: React.FC = () => {
             label="总预算(元)"
             rules={[{ required: true, message: '请输入总预算' }]}
           >
-            <Space.Compact style={{ width: '100%' }}>
+                        <Space.Compact style={{ width: '100%' }}>
               <InputNumber
                 min={0}
+                value={budgetValue}
+                onChange={(val) => {
+                  setBudgetValue(val ?? undefined);
+                  form.setFieldValue('total_budget', val);
+                }}
                 style={{
                   flex: 1,
                   ...(isFieldHighlighted('total_budget') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})

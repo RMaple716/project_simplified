@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { Typography, Button, Progress, Card, Alert, message, Tag, Space } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
 import { taskApi } from '../services';
 import { workflowLogger } from '../utils/workflowlogger';
 import NegotiationVisualizer from '../components/NegotiationVisualizer';
@@ -64,6 +66,7 @@ const TaskStatus: React.FC = () => {
   const [liveNegotiationEvents, setLiveNegotiationEvents] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [progressMessage, setProgressMessage] = useState('正在初始化...');
+  const negotiationState = useSelector((state: RootState) => state.negotiation);
   const wsRef = useRef<ReturnType<typeof getDefaultWS> | null>(null);
   const navigatingRef = useRef(false);
 
@@ -242,36 +245,31 @@ const TaskStatus: React.FC = () => {
     return () => clearInterval(interval);
   }, [taskId, navigate]);
 
-    // ===== 计算总体进度 =====
+        // ===== 计算总体进度 =====
   const overallProgress = useMemo(() => {
     if (currentPhase === 'finalized') return 100;
     if (currentPhase === 'failed') return 100;
-    // 优先使用后端轮询返回的 progress 值（更准确）
-    if (taskInfo && typeof taskInfo.progress === 'number' && taskInfo.progress > 0) {
-      return Math.min(Math.round(taskInfo.progress), 99);
-    }
+    // 协商阶段：直接从 Redux negotiationSlice 获取进度（更准确）
     if (currentPhase === 'negotiating') {
-      // 协商阶段：占 80%-95%
-      const base = 80;
-      // 基于协商迭代轮数（COUNTER数量）计算进度增量
-      const counterCount = liveNegotiationEvents.filter(e => e.eventType === 'COUNTER').length;
-      // 每轮迭代加 3%，最多 4 轮 = 12%
-      const extra = Math.min(counterCount * 3, 15);
-      return base + extra;
+      const negotiationPercent = negotiationState?.progress?.overallPercent;
+      if (negotiationPercent && negotiationPercent > 0) {
+        return Math.min(negotiationPercent, 99);
+      }
+      return 80;
     }
     if (currentPhase === 'executing') {
+      // 优先使用后端轮询返回的 progress 值
+      if (taskInfo && typeof taskInfo.progress === 'number' && taskInfo.progress > 0) {
+        return Math.min(Math.round(taskInfo.progress), 79);
+      }
       const completedCount = agents.filter(a => a.status === 'success' || a.status === 'failed').length;
       const runningCount = agents.filter(a => a.status === 'running').length;
       // 每个 agent 占 20%
       const baseProgress = (completedCount * 20) + (runningCount > 0 ? 10 : 0);
-      // 如果有后端 progress 值且在范围内，使用它
-      if (taskInfo && typeof taskInfo.progress === 'number' && taskInfo.progress > baseProgress) {
-        return Math.min(Math.round(taskInfo.progress), 79);
-      }
       return Math.min(baseProgress, 79);
     }
     return 0;
-  }, [currentPhase, agents, liveNegotiationEvents, taskInfo]);
+  }, [currentPhase, agents, liveNegotiationEvents, taskInfo, negotiationState?.progress?.overallPercent]);
 
   // ===== 合并 WebSocket 事件和轮询事件 =====
   const mergedEvents = useMemo(() => {

@@ -44,22 +44,43 @@ const negotiationSlice = createSlice({
       const event = action.payload;
       state.events.push(event);
 
-      // 更新进度状态
-      const phase = event.phase;
+      // 将事件类型映射到协商阶段
+      const eventTypeToPhase: Record<string, NegotiationPhase> = {
+        'CFP': 'CFP',
+        'PROPOSE': 'BIDDING',
+        'COUNTER': 'NEGOTIATE',
+        'ACCEPT': 'FINALIZING',
+        'REJECT': 'NEGOTIATE',
+        'ROLLBACK': 'NEGOTIATE',
+        'FINALIZED': 'FINALIZED',
+        'AGENT_MSG': 'NEGOTIATE',
+        'NEGOTIATION_STARTED': 'NEGOTIATE',
+      };
+      const phase = event.phase || eventTypeToPhase[event.eventType] || 'NEGOTIATE';
       state.progress.currentPhase = phase;
 
       // 如果是 FINALIZED 阶段，直接设为 100%
       if (phase === 'FINALIZED') {
         state.progress.overallPercent = 100;
       } else {
-        const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
-        // 改进的进度估算：基于 COUNTER（反提案）次数代表迭代轮数，而非事件总数
+        const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [40, 80];
         const counterCount = state.events.filter(e => e.eventType === 'COUNTER').length;
-        // 假设最大合理迭代轮数为 5 轮，超过即视为接近完成
-        const maxIterations = 5;
-        const iterationsProgress = Math.min(counterCount / maxIterations, 1);
-        const phasePercent = minP + (maxP - minP) * iterationsProgress;
-        state.progress.overallPercent = Math.round(phasePercent);
+        const proposeCount = state.events.filter(e => e.eventType === 'PROPOSE').length;
+        const acceptCount = state.events.filter(e => e.eventType === 'ACCEPT').length;
+        //const totalEvents = state.events.length;
+
+        // 协商前期（CFP/BIDDING）：基于 PROPOSE 数量
+        if (phase === 'CFP' || phase === 'BIDDING') {
+          const biddingProgress = Math.min(proposeCount / 5, 1);
+          state.progress.overallPercent = Math.round(minP + (maxP - minP) * biddingProgress);
+        } else {
+          // 协商中（NEGOTIATE/FINALIZING）：基于 COUNTER 次数
+          const maxIterations = 5;
+          const counterProgress = Math.min(counterCount / maxIterations, 1);
+          const acceptBonus = acceptCount > 0 ? 0.3 : 0;
+          const progressRatio = Math.min(counterProgress + acceptBonus, 1);
+          state.progress.overallPercent = Math.min(Math.round(minP + (maxP - minP) * progressRatio), 99);
+        }
       }
 
       // 更新活跃参与方
@@ -81,21 +102,44 @@ const negotiationSlice = createSlice({
       state.events = action.payload;
       if (action.payload.length > 0) {
         const last = action.payload[action.payload.length - 1];
-        // 根据最后一个事件推断当前阶段
-        const phase = last.phase || last.eventType as NegotiationPhase;
+        // 将事件类型映射到协商阶段 eventType → phase
+        const eventTypeToPhase: Record<string, NegotiationPhase> = {
+          'CFP': 'CFP',
+          'PROPOSE': 'BIDDING',
+          'COUNTER': 'NEGOTIATE',
+          'ACCEPT': 'FINALIZING',
+          'REJECT': 'NEGOTIATE',
+          'ROLLBACK': 'NEGOTIATE',
+          'FINALIZED': 'FINALIZED',
+          'AGENT_MSG': 'NEGOTIATE',
+          'NEGOTIATION_STARTED': 'NEGOTIATE',
+        };
+        const phase = last.phase || eventTypeToPhase[last.eventType] || 'NEGOTIATE';
         state.progress.currentPhase = phase;
 
-        // 如果是 FINALIZED 阶段，直接设为 100%
         if (phase === 'FINALIZED') {
           state.progress.overallPercent = 100;
         } else {
-          // 改进的进度估算：基于 COUNTER（反提案）次数
-          const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [0, 100];
+          const [minP, maxP] = PHASE_PROGRESS_RANGE[phase] || [40, 80];
+          // 改进：根据事件类型分布估算进度
+          //const totalEvents = action.payload.length;
           const counterCount = action.payload.filter(e => e.eventType === 'COUNTER').length;
+          const proposeCount = action.payload.filter(e => e.eventType === 'PROPOSE').length;
+          const acceptCount = action.payload.filter(e => e.eventType === 'ACCEPT').length;
+          
+          // 基于 COUNTER 次数估算迭代进度（0~1）
           const maxIterations = 5;
-          const iterationsProgress = Math.min(counterCount / maxIterations, 1);
-          const phasePercent = minP + (maxP - minP) * iterationsProgress;
-          state.progress.overallPercent = Math.min(Math.round(phasePercent), 100);
+          const counterProgress = Math.min(counterCount / maxIterations, 1);
+          
+          // 如果已经有 ACCEPT 事件，说明接近完成
+          const acceptBonus = acceptCount > 0 ? 0.3 : 0;
+          
+          // 如果 PROPOSE 很多但 COUNTER 很少，说明还在 BIDDING 阶段
+          const phaseRatio = proposeCount > counterCount * 2 ? 0.3 : counterProgress;
+          
+          const progressRatio = Math.min(Math.max(phaseRatio, counterProgress) + acceptBonus, 1);
+          const phasePercent = minP + (maxP - minP) * progressRatio;
+          state.progress.overallPercent = Math.min(Math.round(phasePercent), 99);
         }
 
         // 用最后一个事件生成摘要
