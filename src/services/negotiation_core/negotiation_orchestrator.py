@@ -2001,8 +2001,34 @@ class NegotiationOrchestrator:
                 # 优先使用已有的 human_readable 字段
                 hr = adj.get("human_readable", "").strip()
                 if not hr:
-                    # 兼容旧格式：使用模板生成
+                    # 兼容系统内部格式：使用模板生成
                     hr = build_human_readable_from_adjustment(adj)
+
+                if not hr:
+                    # 兼容 LLM 返回格式（字段名为 target/from/to/action/reason）
+                    target = adj.get("target", "")
+                    action = adj.get("action", "")
+                    from_val = adj.get("from", "")
+                    to_val = adj.get("to", "")
+                    reason = adj.get("reason", "")
+                    if not target:
+                        target = log_entry.get("target", "")
+                    if not action:
+                        action = log_entry.get("action", "")
+                    if isinstance(target, list):
+                        target = "、".join(target)
+                    parts = []
+                    if action:
+                        parts.append(action)
+                    if target:
+                        parts.append(target)
+                    if from_val and to_val:
+                        parts.append(f"从{from_val}调整为{to_val}")
+                    elif to_val:
+                        parts.append(f"调整为{to_val}")
+                    if reason:
+                        parts.append(f"（{reason}）")
+                    hr = "".join(parts) if parts else ""
 
                 if hr and hr not in seen:
                     seen.add(hr)

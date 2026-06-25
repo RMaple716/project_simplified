@@ -72,14 +72,18 @@ const TaskStatus: React.FC = () => {
     setAgents(prev => prev.map(a => a.type === agentType ? { ...a, ...updates } : a));
   }, []);
 
-  // ===== WebSocket 连接 =====
+    // ===== WebSocket 连接（仅在 taskId 变化时重连） =====
+  const prevTaskIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!taskId) return;
     if (navigatingRef.current) return;
 
-    // 只要不是 finalizing 阶段，就连接 WebSocket
     const ws = getDefaultWS();
     wsRef.current = ws;
+
+    // 只在 taskId 变化时才重新连接 WebSocket
+    const taskIdChanged = prevTaskIdRef.current !== taskId;
+    prevTaskIdRef.current = taskId;
 
     const unsubStatus = ws.onStatusChange((status) => {
       setWsConnected(status === 'connected');
@@ -157,14 +161,21 @@ const TaskStatus: React.FC = () => {
       }
     });
 
-    ws.connect(taskId);
+    // 只在 taskId 变化时真正连接，否则只是重新注册监听器
+    if (taskIdChanged) {
+      ws.connect(taskId);
+    }
 
     return () => {
       unsubEvent();
       unsubStatus();
-      ws.disconnect();
+      // 只在 taskId 变化时才断开，避免 StrictMode 下反复重连
+      if (taskIdChanged) {
+        ws.disconnect();
+      }
     };
-  }, [taskId, navigate, updateAgentStatus]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
   // ===== HTTP 轮询（作为 WebSocket 的补充/降级） =====
   useEffect(() => {
@@ -231,25 +242,36 @@ const TaskStatus: React.FC = () => {
     return () => clearInterval(interval);
   }, [taskId, navigate]);
 
-  // ===== 计算总体进度 =====
+    // ===== 计算总体进度 =====
   const overallProgress = useMemo(() => {
     if (currentPhase === 'finalized') return 100;
     if (currentPhase === 'failed') return 100;
+    // 优先使用后端轮询返回的 progress 值（更准确）
+    if (taskInfo && typeof taskInfo.progress === 'number' && taskInfo.progress > 0) {
+      return Math.min(Math.round(taskInfo.progress), 99);
+    }
     if (currentPhase === 'negotiating') {
-      // 协商阶段：占 80%-98%
+      // 协商阶段：占 80%-95%
       const base = 80;
-      const events = liveNegotiationEvents.length;
-      const extra = Math.min(events * 3, 18); // 每多一个事件加3%，最多18%
+      // 基于协商迭代轮数（COUNTER数量）计算进度增量
+      const counterCount = liveNegotiationEvents.filter(e => e.eventType === 'COUNTER').length;
+      // 每轮迭代加 3%，最多 4 轮 = 12%
+      const extra = Math.min(counterCount * 3, 15);
       return base + extra;
     }
     if (currentPhase === 'executing') {
       const completedCount = agents.filter(a => a.status === 'success' || a.status === 'failed').length;
       const runningCount = agents.filter(a => a.status === 'running').length;
       // 每个 agent 占 20%
-      return (completedCount * 20) + (runningCount > 0 ? 10 : 0);
+      const baseProgress = (completedCount * 20) + (runningCount > 0 ? 10 : 0);
+      // 如果有后端 progress 值且在范围内，使用它
+      if (taskInfo && typeof taskInfo.progress === 'number' && taskInfo.progress > baseProgress) {
+        return Math.min(Math.round(taskInfo.progress), 79);
+      }
+      return Math.min(baseProgress, 79);
     }
     return 0;
-  }, [currentPhase, agents, liveNegotiationEvents]);
+  }, [currentPhase, agents, liveNegotiationEvents, taskInfo]);
 
   // ===== 合并 WebSocket 事件和轮询事件 =====
   const mergedEvents = useMemo(() => {

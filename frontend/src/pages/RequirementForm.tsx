@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Form, Input, InputNumber, DatePicker, Select, Button, Card, message, Row, Col, Divider, Tag, Alert, Space, Typography } from 'antd';
+import { Form, Input, InputNumber, DatePicker, Select, Button, Card, message, Row, Col, Divider, Tag, Alert, Space, Typography, Modal, Descriptions } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
@@ -41,7 +41,10 @@ const RequirementForm: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractedFields, setExtractedFields] = useState<string[]>([]);
-  const [showExtractSummary, setShowExtractSummary] = useState(false);
+    const [showExtractSummary, setShowExtractSummary] = useState(false);
+  // 独立追踪 travel_days 值（绕过 Ant Design InputNumber 箭头修改不更新表单值的 bug）
+  const [travelDaysValue, setTravelDaysValue] = useState<number | undefined>(3);
+  const [travelerCountValue, setTravelerCountValue] = useState<number | undefined>(2);
 
   /** 高亮自动填充的字段，3秒后消退 */
   const highlightExtractedField = (fieldName: string) => {
@@ -89,11 +92,13 @@ const RequirementForm: React.FC = () => {
       }
       if (result.people) {
         form.setFieldValue('traveler_count', result.people);
+        setTravelerCountValue(result.people);
         filledFields.push('traveler_count');
         highlightExtractedField('traveler_count');
       }
       if (result.travel_days) {
         form.setFieldValue('travel_days', result.travel_days);
+        setTravelDaysValue(result.travel_days);
         filledFields.push('travel_days');
         highlightExtractedField('travel_days');
       }
@@ -150,11 +155,13 @@ const RequirementForm: React.FC = () => {
         }
         if (result.people) {
           form.setFieldValue('traveler_count', result.people);
+          setTravelerCountValue(result.people);
           filledFields.push('traveler_count');
           highlightExtractedField('traveler_count');
         }
         if (result.travel_days) {
           form.setFieldValue('travel_days', result.travel_days);
+          setTravelDaysValue(result.travel_days);
           filledFields.push('travel_days');
           highlightExtractedField('travel_days');
         }
@@ -182,29 +189,73 @@ const RequirementForm: React.FC = () => {
     }
   };
 
-  const handleSubmit = async (values: RequirementFormValues) => {
+    const handleSubmit = async (values: RequirementFormValues) => {
+    // ===== 【诊断】打印表单实时值 vs 独立 state =====
+    console.log('[表单提交] onFinish values.travel_days:', values.travel_days, '类型:', typeof values.travel_days);
+    console.log('[表单提交] 独立 state travelDaysValue:', travelDaysValue, '类型:', typeof travelDaysValue);
+
+    // 优先使用独立追踪的 travelDaysValue（绕过 Ant Design InputNumber 箭头修改不更新表单值的 bug）
+    const realTravelDays = travelDaysValue ?? Number(values.travel_days);
+    const confirmedDays = Number(realTravelDays);
+    if (isNaN(confirmedDays) || confirmedDays <= 0) {
+      message.error('请正确填写出行天数');
+      setLoading(false);
+      return;
+    }
+
+    // ===== 提交前确认弹窗 =====
+    const dateStr = (values.travel_date as any)?.format?.('YYYY-MM-DD') || '';
+
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: '请确认行程关键信息',
+        width: 480,
+        content: (
+          <Descriptions column={1} size="small" style={{ marginTop: 16 }}>
+            <Descriptions.Item label="目的地城市">{values.city_name || '未填写'}</Descriptions.Item>
+            <Descriptions.Item label="出行天数">
+              <span style={{ color: confirmedDays >= 3 ? '#52c41a' : '#faad14', fontWeight: 600 }}>
+                {confirmedDays} 天
+              </span>
+            </Descriptions.Item>
+            <Descriptions.Item label="出行日期">{dateStr || '未填写'}</Descriptions.Item>
+            <Descriptions.Item label="总预算">{values.total_budget || '未填写'} 元</Descriptions.Item>
+            <Descriptions.Item label="出行人数">{values.traveler_count || '未填写'} 人</Descriptions.Item>
+            <Descriptions.Item label="出行类型">{values.travel_type || '未填写'}</Descriptions.Item>
+            <Descriptions.Item label="偏好">{values.preferences?.join('、') || '无'}</Descriptions.Item>
+          </Descriptions>
+        ),
+        okText: '确认无误，开始规划',
+        cancelText: '返回修改',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+
+    if (!confirmed) {
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await requirementApi.submit({
         user_id: currentUserId,
         requirement: {
           city_name: values.city_name,
-          travel_days: values.travel_days,
+          travel_days: confirmedDays,
           total_budget: values.total_budget,
           travel_type: values.travel_type,
-          travel_date: values.travel_date.format('YYYY-MM-DD'),
+          travel_date: dateStr,
           preferences: values.preferences
         }
       });
 
-      // response已经是完整的响应对象，不需要再访问.data
-      
-            if (response.code === 200) {
+      if (response.code === 200) {
         message.success('需求提交成功！');
 
         const requirementId = response.data.requirement_id;
 
-        // 自动进行任务分解
         message.loading({ content: '正在智能规划行程...', key: 'decompose', duration: 0 });
 
         const decomposeResponse = await fetch('/api/v1/task/decompose', {
@@ -214,10 +265,10 @@ const RequirementForm: React.FC = () => {
             requirement_id: requirementId,
             structured_requirement: {
               city_name: values.city_name,
-              travel_days: values.travel_days,
+              travel_days: confirmedDays,
               total_budget: values.total_budget,
-              travel_date: values.travel_date.format('YYYY-MM-DD'),
-              traveler_count: values.traveler_count,
+              travel_date: dateStr,
+              traveler_count: travelerCountValue ?? values.traveler_count,
               preferences: values.preferences,
             }
           })
@@ -284,9 +335,9 @@ const RequirementForm: React.FC = () => {
           form={form}
           layout="vertical"
           onFinish={handleSubmit}
-          initialValues={{
-            travel_days: 3,
-            traveler_count: 2,
+            initialValues={{
+              travel_days: 3,
+              traveler_count: 2,
             travel_type: 'leisure',
             preferences: []
           }}
@@ -384,7 +435,14 @@ const RequirementForm: React.FC = () => {
               >
                 <Space.Compact style={{ width: '100%' }}>
                   <InputNumber
-                    min={1} max={30} style={{
+                    min={1} max={30}
+                    value={travelDaysValue}
+                    onChange={(val) => {
+                      setTravelDaysValue(val ?? undefined);
+                      // 同步更新表单内部值（确保 required 校验通过）
+                      form.setFieldValue('travel_days', val);
+                    }}
+                    style={{
                       flex: 1,
                       ...(isFieldHighlighted('travel_days') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
                     }}
@@ -405,7 +463,13 @@ const RequirementForm: React.FC = () => {
               >
                 <Space.Compact style={{ width: '100%' }}>
                   <InputNumber
-                    min={1} max={20} style={{
+                    min={1} max={20}
+                    value={travelerCountValue}
+                    onChange={(val) => {
+                      setTravelerCountValue(val ?? undefined);
+                      form.setFieldValue('traveler_count', val);
+                    }}
+                    style={{
                       flex: 1,
                       ...(isFieldHighlighted('traveler_count') ? { borderColor: '#52c41a', backgroundColor: '#f6ffed' } : {})
                     }}

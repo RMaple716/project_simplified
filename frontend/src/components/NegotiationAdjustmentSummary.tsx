@@ -17,12 +17,29 @@ const NegotiationAdjustmentSummary: React.FC<NegotiationAdjustmentSummaryProps> 
   events,
   onEventClick,
 }) => {
+    // 将 LLM 格式的 adjustment 转为标准格式（field/item_name/before/after）
+  const normalizeAdjustment = (adj: any): any => {
+    // 已经是标准格式
+    if (adj.field || adj.item_name) return adj;
+    // LLM 格式 {target, action, from, to, reason}
+    const field = adj.action || (adj.reason ? '调整' : '未知');
+    const itemName = adj.target || adj.item_name || '';
+    const beforeVal = adj.from || adj.before || '';
+    const afterVal = adj.to || adj.after || '';
+    return { field, item_name: itemName, before: beforeVal, after: afterVal, reason: adj.reason || '' };
+  };
+
   // 按事件筛选出有调整详情的事件，同时保留其在原始 events 中的索引
   const adjustmentEvents = useMemo(() => {
     const result: { event: NegotiationEvent; originalIndex: number }[] = [];
     events.forEach((e, i) => {
-      if (e.adjustments && e.adjustments.length > 0) {
-        result.push({ event: e, originalIndex: i });
+      const rawAdjustments = e.adjustments || [];
+      if (rawAdjustments.length > 0) {
+        const normalizedAdjustments = rawAdjustments.map(normalizeAdjustment);
+        result.push({
+          event: { ...e, adjustments: normalizedAdjustments } as NegotiationEvent,
+          originalIndex: i,
+        });
       }
     });
     return result;

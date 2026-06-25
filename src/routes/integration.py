@@ -152,11 +152,11 @@ def integrate_agent_results_to_daily_plans(
         - hotel: 住宿信息（仅第一天或换酒店时）
         - daily_cost: 当日总花费
     """
-        # 提取基本信息
-    travel_days = structured_requirement.get("travel_days", 1)
-    travel_date_str = structured_requirement.get("travel_date", datetime.now().strftime("%Y-%m-%d"))
-    traveler_count = structured_requirement.get("traveler_count", 1)
-    city_name = structured_requirement.get("city_name", "")
+    # 提取基本信息
+    travel_days = int(structured_requirement.get("travel_days", 1) or 1)
+    travel_date_str = str(structured_requirement.get("travel_date", datetime.now().strftime("%Y-%m-%d")))
+    traveler_count = int(structured_requirement.get("traveler_count", 1) or 1)
+    city_name = str(structured_requirement.get("city_name", ""))
     
     # 解析起始日期
     try:
@@ -250,6 +250,37 @@ def integrate_agent_results_to_daily_plans(
         "天津": {"lat": 39.3434, "lng": 117.3616},
         "郑州": {"lat": 34.7466, "lng": 113.6254},
         "沈阳": {"lat": 41.8057, "lng": 123.4315},
+        # 省份/地区 → 代表性城市坐标
+        "广西": {"lat": 25.2736, "lng": 110.2900},
+        "广西壮族自治区": {"lat": 25.2736, "lng": 110.2900},
+        "广东": {"lat": 23.1291, "lng": 113.2644},
+        "福建": {"lat": 24.4798, "lng": 118.0894},
+        "浙江": {"lat": 30.2741, "lng": 120.1551},
+        "江苏": {"lat": 32.0603, "lng": 118.7969},
+        "四川": {"lat": 30.5728, "lng": 104.0668},
+        "云南": {"lat": 25.0389, "lng": 102.7183},
+        "陕西": {"lat": 34.3416, "lng": 108.9398},
+        "湖南": {"lat": 28.2282, "lng": 112.9388},
+        "湖北": {"lat": 30.5928, "lng": 114.3055},
+        "山东": {"lat": 36.0671, "lng": 120.3826},
+        "海南": {"lat": 18.2528, "lng": 109.5120},
+        "黑龙江": {"lat": 45.8038, "lng": 126.5350},
+        "辽宁": {"lat": 38.9140, "lng": 121.6147},
+        "河南": {"lat": 34.7466, "lng": 113.6254},
+        "河北": {"lat": 38.0428, "lng": 114.5149},
+        "山西": {"lat": 37.8706, "lng": 112.5489},
+        "江西": {"lat": 28.6829, "lng": 115.8582},
+        "安徽": {"lat": 31.8206, "lng": 117.2272},
+        "贵州": {"lat": 26.6470, "lng": 106.6302},
+        "甘肃": {"lat": 36.0611, "lng": 103.8343},
+        "内蒙古": {"lat": 40.8174, "lng": 111.7652},
+        "新疆": {"lat": 43.7928, "lng": 87.6284},
+        "西藏": {"lat": 29.6500, "lng": 91.1000},
+        "宁夏": {"lat": 38.4713, "lng": 106.2630},
+        "青海": {"lat": 36.6208, "lng": 101.7794},
+        "台湾": {"lat": 25.0330, "lng": 121.5645},
+        "香港": {"lat": 22.3193, "lng": 114.1694},
+        "澳门": {"lat": 22.1987, "lng": 113.5439},
     }
     city_coord = _BUILTIN_CITY_COORDS.get(city_name, {"lat": 39.9042, "lng": 116.4074})
 
@@ -294,36 +325,29 @@ def integrate_agent_results_to_daily_plans(
     # 对景点进行路线优化
     optimized_attractions = calculate_route_optimization(attractions_data)
     
-        # 按时间段分组景点（morning/afternoon/evening）
+    # 按时间段分组景点
     morning_attractions = [a for a in optimized_attractions if isinstance(a, dict) and a.get("visit_time_slot") == "morning"]
     afternoon_attractions = [a for a in optimized_attractions if isinstance(a, dict) and a.get("visit_time_slot") == "afternoon"]
     evening_attractions = [a for a in optimized_attractions if isinstance(a, dict) and a.get("visit_time_slot") == "evening"]
     
-    total_slots = travel_days * 3  # 每天3个时间段
-    total_attractions = len(morning_attractions) + len(afternoon_attractions) + len(evening_attractions)
+    # 如果景点没有 visit_time_slot 标记，全部归入 afternoon
+    if not morning_attractions and not afternoon_attractions and not evening_attractions:
+        afternoon_attractions = [a for a in optimized_attractions if isinstance(a, dict)]
     
-    # 如果景点总数 <= 时间段总数，按正常分配
-    # 否则按比例压缩
-    attractions_per_day = {
-        "morning": max(1, len(morning_attractions) // travel_days) if morning_attractions else 0,
-        "afternoon": max(1, len(afternoon_attractions) // travel_days) if afternoon_attractions else 0,
-        "evening": max(1, len(evening_attractions) // travel_days) if evening_attractions else 0
-    }
+        # 将每个时段的景点循环分配到每天（每天每个时段最多1个，景点不够时循环复用）
+    # 例如：只有2个 morning 景点但行程5天 → 第1天=A,第2天=B,第3天=A,第4天=B,第5天=A
+    def build_daily_slot_plan(slot_attractions: list, total_days: int) -> list:
+        """将景点列表循环分配到每天（景点不足时重复使用），确保每天都有景点安排"""
+        result = [None] * total_days
+        if not slot_attractions:
+            return result
+        for i in range(total_days):
+            result[i] = slot_attractions[i % len(slot_attractions)]
+        return result
     
-    # 防止索引越界：确保总分配数不超过实际景点数
-    def cap_indices(slot_attractions, per_day):
-        if per_day == 0:
-            return 0
-        total_needed = per_day * travel_days
-        if total_needed > len(slot_attractions):
-            return max(1, len(slot_attractions) // travel_days)
-        return per_day
-    
-    attraction_indices = {
-        "morning": 0,
-        "afternoon": 0,
-        "evening": 0
-    }
+    morning_per_day = build_daily_slot_plan(morning_attractions, travel_days)
+    afternoon_per_day = build_daily_slot_plan(afternoon_attractions, travel_days)
+    evening_per_day = build_daily_slot_plan(evening_attractions, travel_days)
     
     day_plans = []
     
@@ -364,41 +388,38 @@ def integrate_agent_results_to_daily_plans(
         # ===== 生成天气数据（所有天数都有，不会缺失） =====
         day_weather = _make_weather(current_date, day)
         
-        # 分配当天的景点（按时间段分配，避免时间冲突）
+        # 分配当天的景点（按轮询分配，景点不够的天留空）
         day_attractions = []
         
         # 上午景点（09:00-11:30）
-        for i in range(attractions_per_day["morning"]):
-            if attraction_indices["morning"] < len(morning_attractions):
-                attraction = morning_attractions[attraction_indices["morning"]].copy()
-                attraction["visit_time"] = "上午"
-                attraction["start_time"] = "09:00"
-                attraction["end_time"] = "11:30"
-                attraction["visit_duration"] = "2.5小时"
-                day_attractions.append(attraction)
-                attraction_indices["morning"] += 1
+        morning_attr = morning_per_day[day - 1] if day - 1 < len(morning_per_day) else None
+        if morning_attr:
+            attr = morning_attr.copy()
+            attr["visit_time"] = "上午"
+            attr["start_time"] = "09:00"
+            attr["end_time"] = "11:30"
+            attr["visit_duration"] = "2.5小时"
+            day_attractions.append(attr)
         
         # 下午景点（14:00-16:30）
-        for i in range(attractions_per_day["afternoon"]):
-            if attraction_indices["afternoon"] < len(afternoon_attractions):
-                attraction = afternoon_attractions[attraction_indices["afternoon"]].copy()
-                attraction["visit_time"] = "下午"
-                attraction["start_time"] = "14:00"
-                attraction["end_time"] = "16:30"
-                attraction["visit_duration"] = "2.5小时"
-                day_attractions.append(attraction)
-                attraction_indices["afternoon"] += 1
+        afternoon_attr = afternoon_per_day[day - 1] if day - 1 < len(afternoon_per_day) else None
+        if afternoon_attr:
+            attr = afternoon_attr.copy()
+            attr["visit_time"] = "下午"
+            attr["start_time"] = "14:00"
+            attr["end_time"] = "16:30"
+            attr["visit_duration"] = "2.5小时"
+            day_attractions.append(attr)
         
         # 晚上景点（18:30-20:00）
-        for i in range(attractions_per_day["evening"]):
-            if attraction_indices["evening"] < len(evening_attractions):
-                attraction = evening_attractions[attraction_indices["evening"]].copy()
-                attraction["visit_time"] = "晚上"
-                attraction["start_time"] = "18:30"
-                attraction["end_time"] = "20:00"
-                attraction["visit_duration"] = "1.5小时"
-                day_attractions.append(attraction)
-                attraction_indices["evening"] += 1
+        evening_attr = evening_per_day[day - 1] if day - 1 < len(evening_per_day) else None
+        if evening_attr:
+            attr = evening_attr.copy()
+            attr["visit_time"] = "晚上"
+            attr["start_time"] = "18:30"
+            attr["end_time"] = "20:00"
+            attr["visit_duration"] = "1.5小时"
+            day_attractions.append(attr)
         
         # ===== 对当天景点按地理位置做就近排序 =====
         # 确保同一天内相邻景点的距离尽可能小，避免市区—郊区穿插
@@ -428,10 +449,15 @@ def integrate_agent_results_to_daily_plans(
                 reordered.append(remaining.pop(nearest_idx))
             day_attractions = reordered
         
-        # 安排餐饮（早中晚三餐，时间与景点错开）
+                # 安排餐饮（早中晚三餐，时间与景点错开）
         day_meals = []
+        # 如果当天没有景点，只安排午餐和晚餐（自由活动日）
+        has_activities = len(day_attractions) > 0
         meal_schedule = [
             {"meal_type": "breakfast", "meal_time": "早上", "time": "07:30", "duration": "30分钟"},
+            {"meal_type": "lunch", "meal_time": "中午", "time": "12:00", "duration": "1小时"},
+            {"meal_type": "dinner", "meal_time": "晚上", "time": "17:00", "duration": "1小时"}
+        ] if has_activities else [
             {"meal_type": "lunch", "meal_time": "中午", "time": "12:00", "duration": "1小时"},
             {"meal_type": "dinner", "meal_time": "晚上", "time": "17:00", "duration": "1小时"}
         ]
@@ -585,6 +611,36 @@ def integrate_agent_results_to_daily_plans(
             daily_cost += day_hotel.get("price_per_night", 0)
         
                 # 构建当日行程
+        has_activities = len(day_attractions) > 0
+        notes = f"第{day}天"
+        if day == 1:
+            notes += "·抵达日"
+        elif day == travel_days:
+            notes += "·返程日"
+        if not has_activities:
+            if day == 1 or day == travel_days:
+                notes += "，主要安排在途交通和自由活动"
+            else:
+                notes += "，自由活动日，可自由探索城市或休息"
+        # 如果没有景点但需要住宿，至少保留住宿信息
+        if day == 1 and hotels_data and not day_hotel:
+            day_hotel = hotels_data[0].copy()
+            day_hotel["check_in_date"] = date_str
+            daily_cost += day_hotel.get("price_per_night", 0)
+        # 如果没有景点也没有交通，提供默认交通建议
+        if not day_transport and not has_activities:
+            day_transport = {
+                "transport_id": f"trans_free_{day}",
+                "from": "酒店",
+                "to": "市区",
+                "type": "步行",
+                "duration": 15,
+                "duration_text": "15分钟",
+                "distance": 1000,
+                "distance_text": "1.0公里",
+                "price": 0,
+                "departure_time": "10:00"
+            }
         day_plan = {
             "day": day,
             "date": date_str,
@@ -594,7 +650,7 @@ def integrate_agent_results_to_daily_plans(
             "transport": day_transport,
             "hotel": day_hotel,
             "daily_cost": round(daily_cost, 2),
-            "notes": f"第{day}天行程安排"
+            "notes": notes
         }
         
         day_plans.append(day_plan)
@@ -646,9 +702,12 @@ async def combine_itinerary(request_data: Dict[str, Any]):
         if field not in structured_req:
             return error_response(code=400, msg=f"结构化需求缺少必填字段：{field}")
     
-    # 2. 整合为每日行程
+        # 2. 整合为每日行程
     try:
         day_plans = integrate_agent_results_to_daily_plans(agent_results, structured_req)
+        print(f"[Integrate DEBUG] travel_days={structured_req.get('travel_days')}, day_plans count={len(day_plans)}")
+        for dp in day_plans:
+            print(f"  day={dp.get('day')}, date={dp.get('date')}, attractions={len(dp.get('attractions', []))}, meals={len(dp.get('meals', []))}")
         
          # 3. 调用校验接口
         from src.routes.validate import check_itinerary_conflicts

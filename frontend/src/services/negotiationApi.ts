@@ -113,7 +113,14 @@ export class NegotiationWebSocket {
 
   private _createConnection(): void {
     if (this.ws) {
-      this.ws.close();
+      // 先清除旧的回调再关闭，避免触发重连
+      const oldWs = this.ws;
+      oldWs.onclose = null;
+      oldWs.onerror = null;
+      oldWs.onmessage = null;
+      oldWs.onopen = null;
+      oldWs.close();
+      this.ws = null;
     }
 
     const url = this.sessionId
@@ -193,6 +200,11 @@ export class NegotiationWebSocket {
     }
     this._stopHeartbeat();
     if (this.ws) {
+      // 在 close 之前先把 onclose 置空，避免触发重连
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.onopen = null;
       this.ws.close();
       this.ws = null;
     }

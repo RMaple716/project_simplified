@@ -28,7 +28,6 @@ import {
   PauseCircleOutlined,
   StepForwardOutlined,
   ReloadOutlined,
-  BarChartOutlined,
   ClockCircleOutlined,
   EyeOutlined,
   EyeInvisibleOutlined,
@@ -51,7 +50,7 @@ import {
 } from '../store/slices/negotiationSlice';
 import NegotiationProgressBar from './NegotiationProgressBar';
 import ScrollableRouteTimeline from './ScrollableRouteTimeline';
-import UtilityTrajectoryChart from './UtilityTrajectoryChart';
+//import UtilityTrajectoryChart from './UtilityTrajectoryChart';
 import NegotiationMapOverlay from './NegotiationMapOverlay';
 import type { NegotiationEvent, NegotiationEventType } from '../types/negotiation';
 import { EVENT_TYPE_CN } from '../types/negotiation';
@@ -144,14 +143,6 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
       }
     };
   }, [negotiationState.isReplaying, negotiationState.replaySpeed, dispatch]);
-
-  // 当前可见事件（用于地图和时间轴）
-  const visibleEvents = useMemo(() => {
-    if (negotiationState.replayIndex >= 0) {
-      return negotiationState.events.slice(0, negotiationState.replayIndex + 1);
-    }
-    return negotiationState.events;
-  }, [negotiationState.events, negotiationState.replayIndex]);
 
   // 传统模式（无事件时降级）
   const isLegacy = negotiationState.events.length === 0;
@@ -587,21 +578,22 @@ const NegotiationVisualizer: React.FC<NegotiationVisualizerProps> = ({
                   />
                 ),
               },
-              {
-                key: 'utility',
-                label: (
-                  <Space>
-                    <BarChartOutlined />
-                    <Text>效用轨迹图</Text>
-                  </Space>
-                ),
-                children: (
-                  <UtilityTrajectoryChart
-                    events={visibleEvents}
-                    title="协商效用轨迹"
-                  />
-                ),
-              },
+              // 【隐藏】效用轨迹图 - 二维坐标图不易理解，暂时隐藏
+              // {
+              //   key: 'utility',
+              //   label: (
+              //     <Space>
+              //       <BarChartOutlined />
+              //       <Text>效用轨迹图</Text>
+              //     </Space>
+              //   ),
+              //   children: (
+              //     <UtilityTrajectoryChart
+              //       events={visibleEvents}
+              //       title="协商效用轨迹"
+              //     />
+              //   ),
+              // },
             ]}
           />
         </>

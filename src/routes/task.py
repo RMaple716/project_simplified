@@ -1,4 +1,5 @@
 """任务分发相关路由"""
+import json
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -161,6 +162,9 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
 
     if not requirement_id or not structured_requirement:
         return error_response(code=400, msg="缺少必要参数：requirement_id 或 structured_requirement")
+
+    print(f"[DECOMPOSE DEBUG] 收到 structured_requirement: travel_days={structured_requirement.get('travel_days')} (type={type(structured_requirement.get('travel_days')).__name__}), city_name={structured_requirement.get('city_name')}, budget={structured_requirement.get('total_budget')}, date={structured_requirement.get('travel_date')}")
+    print(f"[DECOMPOSE DEBUG] 完整 structured_requirement: {json.dumps(structured_requirement, ensure_ascii=False, default=str)}")
 
     # 验证需求是否存在
     requirement = RequirementService.get_requirement(db, requirement_id)
@@ -543,6 +547,7 @@ async def decompose_task(request_data: Dict[str, Any], background_tasks: Backgro
                                 "transport": {"transport_options": transport_options}
                             }
 
+                            print(f"[TASK DEBUG] 创建行程: travel_days={travel_days}, city_name={city_name}, requirement_data={requirement_data}")
                             structured_req = {
                                 "city_name": city_name,
                                 "travel_days": travel_days,
